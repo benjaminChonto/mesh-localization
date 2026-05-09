@@ -7,24 +7,34 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-use embassy_executor::Spawner;
+use core::error;
+
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
+use esp_hal::peripherals;
+use esp_hal::rtc_cntl::sleep;
 use esp_hal::timer::timg::TimerGroup;
+use esp_radio::esp_now::{EspNow, EspNowManager, PeerInfo};
 use log::info;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
-
+const HEAP_SIZE: usize = 128 * 1024;
 #[allow(
     clippy::large_stack_frames,
     reason = "it's not unusual to allocate larger buffers etc. in main"
 )]
+
+
+const DUMMY_MSG: [u8; 6] = [0u8; 6];
+const BROADCAST: [u8; 6] = [0xff; 6];
+
+
 #[esp_rtos::main]
-async fn main(spawner: Spawner) -> ! {
-    // generator version: 1.2.0
+async fn main(_spawner: embassy_executor::Spawner) {
+    esp_alloc::heap_allocator!(size: HEAP_SIZE);
 
     esp_println::logger::init_logger_from_env();
 
@@ -32,19 +42,33 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let sw_interrupt =
-        esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    let sw_interrupt = esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    info!("Embassy initialized!");
+    let (_wifi_controller, interfaces) =
+        esp_radio::wifi::new(peripherals.WIFI, Default::default()).unwrap();
 
-    // TODO: Spawn some tasks
-    let _ = spawner;
+    let mac = interfaces.station.mac_address();
+    info!("Device MAC address {:?}", mac);
+    let esp_now = interfaces.esp_now;
+    esp_now.set_channel(1).unwrap();
 
+    let (manager, mut tx, rx) = esp_now.split();
     loop {
-        info!("Hello world!");
-        Timer::after(Duration::from_secs(1)).await;
-    }
+        match tx.send(&BROADCAST, &DUMMY_MSG) {
+            Ok(waiter) => { let _ = waiter.wait(); },
+            Err(e) => { log::warn!("Could not send message {e}"); }
+        }
 
-    // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0/examples
+        if let Some(packet) = rx.receive() {
+            let rssi = packet.info.rx_control.rssi;
+            let src = packet.info.src_address;
+            let data = packet.data();
+
+            info!("from={:02x?} rssi={}", src, rssi);
+        }
+
+        Timer::after(Duration::from_millis(1000)).await;
+    }
 }
