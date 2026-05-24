@@ -27,11 +27,10 @@ const HEAP_SIZE: usize = 128 * 1024;
     reason = "it's not unusual to allocate larger buffers etc. in main"
 )]
 
-
 const DUMMY_MSG: [u8; 6] = [0u8; 6];
 const BROADCAST: [u8; 6] = [0xff; 6];
 
-
+// test to see if my ssh key is working
 #[esp_rtos::main]
 async fn main(_spawner: embassy_executor::Spawner) {
     esp_alloc::heap_allocator!(size: HEAP_SIZE);
@@ -42,7 +41,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let peripherals = esp_hal::init(config);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let sw_interrupt = esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    let sw_interrupt =
+        esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
 
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
@@ -57,8 +57,12 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let (manager, mut tx, rx) = esp_now.split();
     loop {
         match tx.send(&BROADCAST, &DUMMY_MSG) {
-            Ok(waiter) => { let _ = waiter.wait(); },
-            Err(e) => { log::warn!("Could not send message {e}"); }
+            Ok(waiter) => {
+                let _ = waiter.wait();
+            }
+            Err(e) => {
+                log::warn!("Could not send message {e}");
+            }
         }
 
         if let Some(packet) = rx.receive() {
@@ -72,3 +76,4 @@ async fn main(_spawner: embassy_executor::Spawner) {
         Timer::after(Duration::from_millis(1000)).await;
     }
 }
+
