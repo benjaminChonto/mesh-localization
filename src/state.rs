@@ -9,13 +9,16 @@ pub struct NodeState {
     pub neighbours: HashMap<[u8; 6], f32>,
 }
 
-impl NodeState {
+impl Default for NodeState {
 
-    pub fn default() -> NodeState {
+    fn default() -> NodeState {
         NodeState {
             neighbours: HashMap::new(),
         }
     }
+}
+
+impl NodeState {
 
     pub fn update(&mut self, src_address: [u8; 6], rssi:  i32) {
         // TODO: update with proper estimation

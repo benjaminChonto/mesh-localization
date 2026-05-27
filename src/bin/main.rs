@@ -36,7 +36,7 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>) {
     let id = ID.unwrap_or("0");
     loop {
         let msg = format!("{}:\t{}", id, seq);
-        match tx.send(&BROADCAST, &msg.as_bytes()) {
+        match tx.send(&BROADCAST, msg.as_bytes()) {
             Ok(waiter) => {
                 let _ = waiter.wait();
             }
