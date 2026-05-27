@@ -53,7 +53,7 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>) {
 #[embassy_executor::task]
 async fn receive_packet(rx: EspNowReceiver<'static>, state: &'static mut NodeState) {
     loop {
-        // Consider offloading to a queue and processing in a separate task
+        // TODO: Consider offloading to a queue and processing in a separate task
         while let Some(packet) = rx.receive() {
             let rssi = packet.info.rx_control.rssi;
             let src = packet.info.src_address;
