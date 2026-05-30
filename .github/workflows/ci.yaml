@@ -32,6 +32,4 @@ jobs:
         run: cargo build --release --verbose
 
       - name: Clippy
-        run: cargo clippy --all-features -- \
-                -W clippy::all \
-                -W clippy::pedantic
+        run: cargo clippy --all-features -- -W clippy::all -W clippy::pedantic
