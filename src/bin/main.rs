@@ -29,7 +29,6 @@ const _DUMMY_MSG: [u8; 6] = [0u8; 6];
 const BROADCAST: [u8; 6] = [0xff; 6];
 const ID: Option<&str> = option_env!("ID");
 
-
 #[embassy_executor::task]
 async fn broadcast_ping(mut tx: EspNowSender<'static>) {
     let mut seq: i32 = 0;
@@ -49,23 +48,23 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>) {
     }
 }
 
-
 #[embassy_executor::task]
 async fn receive_packet(rx: EspNowReceiver<'static>, state: &'static mut NodeState) {
     loop {
         // TODO: Consider offloading to a queue and processing in a separate task
         while let Some(packet) = rx.receive() {
-            let rssi = packet.info.rx_control.rssi;
+            // convert rssi to dBM
+            let rssi = (packet.info.rx_control.rssi as u8) as i8;
             let src = packet.info.src_address;
             let data = packet.data();
 
             state.update(src, rssi);
-            info!("from={:02x?} rssi={}; data={}", src, rssi, str::from_utf8(data).unwrap_or("?"));
+            // info!("from={:02x?} rssi={}; data={}", src, rssi, str::from_utf8(data).unwrap_or("?"));
+            state.print_table();
         }
         Timer::after_millis(1000).await;
     }
 }
-
 
 #[allow(
     clippy::large_stack_frames,
@@ -93,7 +92,8 @@ async fn main(spawner: embassy_executor::Spawner) {
     esp_now.set_channel(1).unwrap();
 
     // On board status led
-    let mut led = esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+    let mut led =
+        esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
 
     let state = NodeState::default();
     let state = Box::leak(Box::new(state));
