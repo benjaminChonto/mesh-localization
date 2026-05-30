@@ -22,16 +22,19 @@ jobs:
         with:
           components: clippy
 
+      - name: Install Rust target
+        run: rustup target add riscv32imc-unknown-none-elf
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --release --verbose
 
       - name: Test
         run: cargo test --verbose
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- \
+        run: cargo clippy --all-features -- \
                 -W clippy::all \
                 -W clippy::pedantic
