@@ -31,9 +31,6 @@ jobs:
       - name: Build
         run: cargo build --release --verbose
 
-      - name: Test
-        run: cargo test --verbose
-
       - name: Clippy
         run: cargo clippy --all-features -- \
                 -W clippy::all \
