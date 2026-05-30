@@ -1,8 +1,6 @@
 use hashbrown::HashMap;
 
-
 const RSSI_SCALE: f32 = 190.0;
-
 
 #[derive(Debug)]
 pub struct NodeState {
@@ -10,7 +8,6 @@ pub struct NodeState {
 }
 
 impl Default for NodeState {
-
     fn default() -> NodeState {
         NodeState {
             neighbours: HashMap::new(),
@@ -19,11 +16,13 @@ impl Default for NodeState {
 }
 
 impl NodeState {
-
-    pub fn update(&mut self, src_address: [u8; 6], rssi:  i32) {
+    pub fn update(&mut self, src_address: [u8; 6], rssi: i32) {
         // TODO: update with proper estimation
         let distance = rssi as f32 / RSSI_SCALE;
         self.neighbours.insert(src_address, distance);
     }
 
+    pub fn num_neighbors(&self) -> usize {
+        self.neighbours.len()
+    }
 }

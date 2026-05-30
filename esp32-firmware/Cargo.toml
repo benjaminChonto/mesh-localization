@@ -29,6 +29,16 @@ critical-section = "1.2.0"
 static_cell      = "2.1.1"
 esp-alloc = "0.10.0"
 hashbrown = "0.17.1"
+reqwless = "0.13.0"
+embassy-net = { version = "0.9.1", features = ["proto-ipv4", "tcp", "udp", "dns", "medium-ip"] }
+smoltcp = { version = "0.13.1", default-features = false, features = [
+  "proto-ipv4",
+  "socket",
+  "socket-udp",
+  "socket-tcp",
+  "socket-dns",
+  "medium-ip",
+] }
 
 [profile.dev]
 # Rust debug is too slow.
