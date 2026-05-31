@@ -11,9 +11,8 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::format;
-use embassy_net::{Config, Stack, StackResources};
+use embassy_net::{Config, StackResources};
 use embassy_time::{Duration, Timer};
-use embedded_io_async::Write as _;
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
@@ -21,8 +20,8 @@ use esp_hal::rng::Rng;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::state::NodeState;
+use esp32_firmware::telemetry::{WIFI_PASS, WIFI_SSID, send_telemetry};
 use log::info;
-use smoltcp::wire::{IpAddress, IpEndpoint};
 use static_cell::StaticCell;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -31,42 +30,8 @@ const HEAP_SIZE: usize = 128 * 1024;
 const _DUMMY_MSG: [u8; 6] = [0u8; 6];
 const BROADCAST: [u8; 6] = [0xff; 6];
 const ID: Option<&str> = option_env!("ID");
-const TELEMETRY_PORT: u16 = 8080;
-
-const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
-    Some(v) => v,
-    None => "AIVD Deurbel 42",
-};
-const WIFI_PASS: &str = match option_env!("WIFI_PASS") {
-    Some(v) => v,
-    None => "RoombaRobinCasaHouse666",
-};
-const IP_ADDR: &str = match option_env!("IP_ADDR") {
-    Some(v) => v,
-    None => "192.168.1.100",
-};
 
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-
-fn parse_endpoint(s: &str, port: u16) -> IpEndpoint {
-    let mut octets = [0u8; 4];
-    let mut idx = 0;
-    let mut val = 0u32;
-    for &b in s.as_bytes() {
-        if b == b'.' {
-            octets[idx] = val as u8;
-            idx += 1;
-            val = 0;
-        } else {
-            val = val * 10 + (b - b'0') as u32;
-        }
-    }
-    octets[idx] = val as u8;
-    IpEndpoint::new(
-        IpAddress::v4(octets[0], octets[1], octets[2], octets[3]),
-        port,
-    )
-}
 
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface<'static>>) {
@@ -112,45 +77,6 @@ async fn receive_packet(rx: EspNowReceiver<'static>, state: &'static NodeState) 
     }
 }
 
-#[embassy_executor::task]
-async fn send_telemetry(stack: Stack<'static>, state: &'static NodeState) {
-    stack.wait_config_up().await;
-    info!("Network up, starting telemetry");
-
-    let endpoint = parse_endpoint(IP_ADDR, TELEMETRY_PORT);
-    let id = ID.unwrap_or("0");
-
-    loop {
-        let num_neighbors = state.num_neighbors() as i32;
-        let body = format!(r#"{{"id":"{}","num_neighbors":{}}}"#, id, num_neighbors);
-        let request = format!(
-            "POST /update HTTP/1.0\r\nHost: {IP_ADDR}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-
-        let mut rx_buf = [0u8; 512];
-        let mut tx_buf = [0u8; 512];
-        let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
-        socket.set_timeout(Some(Duration::from_secs(10)));
-
-        match socket.connect(endpoint).await {
-            Ok(()) => {
-                if socket.write_all(request.as_bytes()).await.is_ok() {
-                    socket.flush().await.ok();
-                    info!("telemetry sent: {}", body);
-                } else {
-                    log::warn!("telemetry: write failed");
-                }
-                socket.close();
-            }
-            Err(e) => log::warn!("telemetry: connect failed {:?}", e),
-        }
-
-        Timer::after_secs(10).await;
-    }
-}
-
 #[allow(
     clippy::large_stack_frames,
     reason = "it's not unusual to allocate larger buffers etc. in main"
@@ -192,7 +118,6 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(net_task(runner).unwrap());
 
     let esp_now = interfaces.esp_now;
-    // esp_now.set_channel(1).unwrap();
 
     let mut led =
         esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
