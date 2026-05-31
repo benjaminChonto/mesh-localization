@@ -11,6 +11,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 use alloc::format;
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
@@ -29,6 +30,19 @@ const _DUMMY_MSG: [u8; 6] = [0u8; 6];
 const BROADCAST: [u8; 6] = [0xff; 6];
 const ID: Option<&str> = option_env!("ID");
 
+// TODO i do not like that this is global but it needs static lifetime for the channel to be shared
+// across tasks.
+static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, 32> = Channel::new();
+
+// TODO maybe move this struct to somewhere else?
+#[derive(Clone, Copy)]
+pub struct RxPacket {
+    pub src: [u8; 6],
+    pub rssi: i8,
+    pub len: u16,
+    pub data: [u8; 250], // TODO figure out max data packet len
+}
+
 #[embassy_executor::task]
 async fn broadcast_ping(mut tx: EspNowSender<'static>) {
     let mut seq: i32 = 0;
@@ -44,25 +58,48 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>) {
             }
         }
         seq += 1;
-        Timer::after_secs(2).await
+        Timer::after_millis(50).await
     }
 }
 
 #[embassy_executor::task]
-async fn receive_packet(rx: EspNowReceiver<'static>, state: &'static mut NodeState) {
+async fn receive_packet(rx: EspNowReceiver<'static>) {
     loop {
-        // TODO: Consider offloading to a queue and processing in a separate task
         while let Some(packet) = rx.receive() {
-            // convert rssi to dBM
-            let rssi = (packet.info.rx_control.rssi as u8) as i8;
+            let rssi = packet.info.rx_control.rssi as i8;
             let src = packet.info.src_address;
-            let data = packet.data();
 
-            state.update(src, rssi);
-            // info!("from={:02x?} rssi={}; data={}", src, rssi, str::from_utf8(data).unwrap_or("?"));
-            state.print_table();
+            // TODO figure out the max length of data
+            let payload = packet.data();
+            let len = payload.len().min(250);
+
+            // copy to pass ownership
+            let mut data = [0u8; 250];
+            data[..len].copy_from_slice(&payload[..len]);
+
+            let _ = RX_CHANNEL
+                .send(RxPacket {
+                    src,
+                    rssi,
+                    len: len as u16,
+                    data,
+                })
+                .await; // yield if channel is full
         }
-        Timer::after_millis(1000).await;
+
+        Timer::after_millis(1).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn process_packet(state: &'static mut NodeState) {
+    loop {
+        let packet = RX_CHANNEL.receive().await;
+
+        // TODO if processing takes a long time, we might want to introduce some yeilds in the
+        // middle
+        state.update(packet.src, packet.rssi);
+        state.print_table();
     }
 }
 
@@ -101,10 +138,11 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     // Spawn tasks
     spawner.spawn(broadcast_ping(tx).unwrap());
-    spawner.spawn(receive_packet(rx, state).unwrap());
+    spawner.spawn(receive_packet(rx).unwrap());
+    spawner.spawn(process_packet(state).unwrap());
 
     loop {
         led.toggle();
-        Timer::after(Duration::from_millis(1000)).await;
+        Timer::after(Duration::from_millis(50)).await;
     }
 }

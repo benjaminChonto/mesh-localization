@@ -7,7 +7,6 @@ use heapless::Vec;
 use libm::powf;
 use log::info;
 
-const RSSI_SCALE: f32 = 190.0;
 const RSSI_ONE_METER: f32 = -56.0;
 const ENV_FACTOR: f32 = 1.5;
 
