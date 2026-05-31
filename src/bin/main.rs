@@ -58,7 +58,7 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>) {
             }
         }
         seq += 1;
-        Timer::after_millis(100).await
+        Timer::after_millis(50).await
     }
 }
 
@@ -96,12 +96,13 @@ async fn process_packet(state: &'static mut NodeState) {
     loop {
         let mut changed = false;
 
+        // batch update state
         while let Ok(pkt) = RX_CHANNEL.try_receive() {
             state.update(pkt.src, pkt.rssi);
             changed = true;
         }
 
-        // only call print if something actually received
+        // dont print for every single update
         if changed {
             state.print_table();
         }

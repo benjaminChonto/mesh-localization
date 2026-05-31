@@ -8,11 +8,14 @@ use libm::powf;
 use log::info;
 
 const RSSI_ONE_METER: f32 = -56.0;
-const ENV_FACTOR: f32 = 1.5;
+const ENV_FACTOR: f32 = 2.5;
+const AVG_SMOOTHING: f32 = 0.6;
+const SPIKE_THRESHOLD: f32 = 15.0; // threshold for avoiding spikes
 
 #[derive(Debug, Copy, Clone)]
 pub struct State {
     pub rssi: i8,
+    avg_rssi: f32,
     pub dist: f32,
     pub count: u32, // just for debugging, to see if we still receive messages
 }
@@ -22,14 +25,22 @@ impl State {
         let dist = powf(10.0, (RSSI_ONE_METER - rssi as f32) / (10.0 * ENV_FACTOR));
         State {
             rssi,
+            avg_rssi: rssi as f32,
             dist,
             count: 1,
         }
     }
 
     pub fn update(&mut self, rssi: i8) {
+        // try to not take spikes into account but this was not quite working, will have to tune
+        // based on how fast we can get measurements
+        // if (self.avg_rssi - (rssi as f32)).abs() < SPIKE_THRESHOLD {
         self.rssi = rssi;
-        self.dist = powf(10.0, (RSSI_ONE_METER - rssi as f32) / (10.0 * ENV_FACTOR));
+        // exponential moving average, avg factor dictates if newer or older measruemenst are more
+        // important
+        self.avg_rssi = AVG_SMOOTHING * (rssi as f32) + (1.0 - AVG_SMOOTHING) * self.avg_rssi;
+        self.dist = powf(10.0, (RSSI_ONE_METER - self.avg_rssi) / (10.0 * ENV_FACTOR));
+        // }
         self.count += 1;
     }
 }
