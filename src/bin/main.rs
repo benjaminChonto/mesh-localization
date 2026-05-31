@@ -32,7 +32,7 @@ const ID: Option<&str> = option_env!("ID");
 
 // TODO i do not like that this is global but it needs static lifetime for the channel to be shared
 // across tasks.
-static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, 32> = Channel::new();
+static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, 265> = Channel::new();
 
 // TODO maybe move this struct to somewhere else?
 #[derive(Clone, Copy)]
@@ -58,7 +58,7 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>) {
             }
         }
         seq += 1;
-        Timer::after_millis(50).await
+        Timer::after_millis(100).await
     }
 }
 
@@ -94,12 +94,22 @@ async fn receive_packet(rx: EspNowReceiver<'static>) {
 #[embassy_executor::task]
 async fn process_packet(state: &'static mut NodeState) {
     loop {
-        let packet = RX_CHANNEL.receive().await;
+        let mut changed = false;
 
-        // TODO if processing takes a long time, we might want to introduce some yeilds in the
-        // middle
-        state.update(packet.src, packet.rssi);
-        state.print_table();
+        while let Ok(pkt) = RX_CHANNEL.try_receive() {
+            state.update(pkt.src, pkt.rssi);
+            changed = true;
+        }
+
+        // only call print if something actually received
+        if changed {
+            state.print_table();
+        }
+
+        // TODO this is random timing, might want to mess with it
+        // if i didnt have this i think this task stalled the draining of the channel
+        // and if i added a 3rd esp it would go slower for it
+        Timer::after_millis(10).await;
     }
 }
 
