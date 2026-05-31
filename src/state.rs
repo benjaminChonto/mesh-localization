@@ -9,7 +9,7 @@ use log::info;
 
 const RSSI_ONE_METER: f32 = -56.0;
 const ENV_FACTOR: f32 = 2.5;
-const AVG_SMOOTHING: f32 = 0.6;
+const AVG_SMOOTHING: f32 = 0.7; // higher means newer is more important
 const SPIKE_THRESHOLD: f32 = 15.0; // threshold for avoiding spikes
 
 #[derive(Debug, Copy, Clone)]
