@@ -11,7 +11,12 @@ rustflags = [
   "-C", "force-frame-pointers",
 ]
 
-target = "riscv32imc-unknown-none-elf"
+[alias]
+build-firmware = "build -p esp32-firmware --target riscv32imc-unknown-none-elf"
+run-firmware = "run -p esp32-firmware --target riscv32imc-unknown-none-elf"
+build-telemetry = "build -p telemetry"
+
+# target = "riscv32imc-unknown-none-elf"
 
 [unstable]
 build-std = ["core"]
