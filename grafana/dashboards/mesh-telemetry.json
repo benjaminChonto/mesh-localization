@@ -1,0 +1,74 @@
+{
+  "title": "Mesh Telemetry",
+  "uid": "mesh-telemetry",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Request Rate (per node)",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "rate(http_requests_total_total[1m])",
+          "legendFormat": "{{method}} {{path}} id={{id}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Neighbor Count per Node (from /update calls)",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "sum by (id, num_neigbors) (http_requests_total_total{path=\"/update\"})",
+          "legendFormat": "node {{id}} — neighbors: {{num_neigbors}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total Requests",
+      "gridPos": { "x": 0, "y": 16, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "sum(http_requests_total_total)"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Active Nodes (seen in last 5m)",
+      "gridPos": { "x": 6, "y": 16, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "count(sum by (id) (rate(http_requests_total_total{path=\"/update\"}[5m]) > 0))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    }
+  ]
+}

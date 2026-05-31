@@ -14,8 +14,8 @@ rustflags = [
 [alias]
 build-firmware = "build -p esp32-firmware --target riscv32imc-unknown-none-elf"
 run-firmware = "run -p esp32-firmware --target riscv32imc-unknown-none-elf"
-build-telemetry = "build -p telemetry"
-run-telemetry = "run -p telemetry"
+build-telemetry = "build -p telemetry-server"
+run-telemetry = "run -p telemetry-server"
 
 # target = "riscv32imc-unknown-none-elf"
 
