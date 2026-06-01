@@ -35,10 +35,12 @@ const ID: Option<&str> = option_env!("ID");
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
 
-
 #[embassy_executor::task]
-async fn broadcast_ping(mut tx: EspNowSender<'static>, state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
-    let static_buff: &'static mut [u8; 256] = Box::leak( Box::new([0u8; 256]));
+async fn broadcast_ping(
+    mut tx: EspNowSender<'static>,
+    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+) {
+    let static_buff: &'static mut [u8; 256] = Box::leak(Box::new([0u8; 256]));
 
     loop {
         let distances = {
@@ -47,7 +49,7 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>, state: &'static Mutex<Cri
         };
 
         let msg = postcard::to_slice(&distances.unwrap_or_default(), &mut static_buff[..]).unwrap();
-        
+
         match tx.send(&BROADCAST, msg) {
             Ok(waiter) => {
                 let _ = waiter.wait();
@@ -60,9 +62,11 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>, state: &'static Mutex<Cri
     }
 }
 
-
 #[embassy_executor::task]
-async fn receive_packet(rx: EspNowReceiver<'static>, state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
+async fn receive_packet(
+    rx: EspNowReceiver<'static>,
+    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+) {
     loop {
         // TODO: Consider offloading to a queue and processing in a separate task
         while let Some(packet) = rx.receive() {
@@ -82,7 +86,6 @@ async fn receive_packet(rx: EspNowReceiver<'static>, state: &'static Mutex<Criti
         Timer::after_millis(1000).await;
     }
 }
-
 
 #[allow(
     clippy::large_stack_frames,
@@ -110,7 +113,8 @@ async fn main(spawner: embassy_executor::Spawner) {
     esp_now.set_channel(1).unwrap();
 
     // On board status led
-    let mut led = esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+    let mut led =
+        esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
 
     let state: &'static Mutex<CriticalSectionRawMutex, NodeState> =
         STATE.init(Mutex::new(NodeState::new(mac)));
