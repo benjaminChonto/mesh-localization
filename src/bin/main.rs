@@ -10,15 +10,19 @@
 extern crate alloc;
 use alloc::boxed::Box;
 
-use alloc::format;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
-use log::info;
+use hashbrown::HashMap;
+use log::{error, info};
 use mesh_localization::state::NodeState;
+use postcard::Error;
+use static_cell::StaticCell;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -29,14 +33,22 @@ const _DUMMY_MSG: [u8; 6] = [0u8; 6];
 const BROADCAST: [u8; 6] = [0xff; 6];
 const ID: Option<&str> = option_env!("ID");
 
+static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
+
 
 #[embassy_executor::task]
-async fn broadcast_ping(mut tx: EspNowSender<'static>) {
-    let mut seq: i32 = 0;
-    let id = ID.unwrap_or("0");
+async fn broadcast_ping(mut tx: EspNowSender<'static>, state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
+    let static_buff: &'static mut [u8; 256] = Box::leak( Box::new([0u8; 256]));
+
     loop {
-        let msg = format!("{}:\t{}", id, seq);
-        match tx.send(&BROADCAST, msg.as_bytes()) {
+        let distances = {
+            let node_state = state.lock().await;
+            node_state.neighbours.get(&node_state.mac).cloned()
+        };
+
+        let msg = postcard::to_slice(&distances.unwrap_or_default(), &mut static_buff[..]).unwrap();
+        
+        match tx.send(&BROADCAST, msg) {
             Ok(waiter) => {
                 let _ = waiter.wait();
             }
@@ -44,23 +56,28 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>) {
                 log::warn!("Could not send message {e}");
             }
         }
-        seq += 1;
         Timer::after_secs(2).await
     }
 }
 
 
 #[embassy_executor::task]
-async fn receive_packet(rx: EspNowReceiver<'static>, state: &'static mut NodeState) {
+async fn receive_packet(rx: EspNowReceiver<'static>, state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
     loop {
         // TODO: Consider offloading to a queue and processing in a separate task
         while let Some(packet) = rx.receive() {
             let rssi = packet.info.rx_control.rssi;
             let src = packet.info.src_address;
-            let data = packet.data();
+            let data: Result<HashMap<[u8; 6], f32>, Error> = postcard::from_bytes(packet.data());
 
-            state.update(src, rssi);
-            info!("from={:02x?} rssi={}; data={}", src, rssi, str::from_utf8(data).unwrap_or("?"));
+            let mut node_state = state.lock().await;
+            let mac = node_state.mac;
+            node_state.add_distance(mac, src, rssi);
+            let _ = data
+                .map(|d| node_state.add_neighbour_measurement(src, d))
+                .inspect_err(|e| error!("Failed to update data: {:?}", e));
+
+            // info!("from={:02x?} rssi={}; data={:?}", src, rssi, data.unwrap_or_default());
         }
         Timer::after_millis(1000).await;
     }
@@ -95,16 +112,21 @@ async fn main(spawner: embassy_executor::Spawner) {
     // On board status led
     let mut led = esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
 
-    let state = NodeState::default();
-    let state = Box::leak(Box::new(state));
+    let state: &'static Mutex<CriticalSectionRawMutex, NodeState> =
+        STATE.init(Mutex::new(NodeState::new(mac)));
+
     let (_, tx, rx) = esp_now.split();
 
     // Spawn tasks
-    spawner.spawn(broadcast_ping(tx).unwrap());
+    spawner.spawn(broadcast_ping(tx, state).unwrap());
     spawner.spawn(receive_packet(rx, state).unwrap());
 
     loop {
         led.toggle();
-        Timer::after(Duration::from_millis(1000)).await;
+        {
+            let node_state = state.lock().await;
+            info!("{:?}", node_state.neighbour_matrix());
+        }
+        Timer::after(Duration::from_millis(3000)).await;
     }
 }
