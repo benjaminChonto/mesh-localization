@@ -20,6 +20,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use hashbrown::HashMap;
 use log::{error, info};
+use mesh_localization::mds::MDS;
 use mesh_localization::state::NodeState;
 use postcard::Error;
 use static_cell::StaticCell;
@@ -31,7 +32,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 const HEAP_SIZE: usize = 128 * 1024;
 const _DUMMY_MSG: [u8; 6] = [0u8; 6];
 const BROADCAST: [u8; 6] = [0xff; 6];
-const ID: Option<&str> = option_env!("ID");
+const _ID: Option<&str> = option_env!("ID");
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
 
@@ -87,6 +88,28 @@ async fn receive_packet(
     }
 }
 
+#[embassy_executor::task]
+async fn calculate_state(
+    state: &'static Mutex<CriticalSectionRawMutex, NodeState>
+) {
+    let mut mds = MDS::default();
+    loop {
+        let neighbour_dist = {
+            state.lock().await.neighbour_matrix()
+        };
+        if neighbour_dist.iter().any(|row| row.contains(&f32::INFINITY)) {
+            // Neighbour matrix is incomplete
+            Timer::after_millis(5000).await;
+            continue;    
+        }
+        let mds = mds.compute(neighbour_dist);
+        {
+            state.lock().await.mds = mds.clone();
+        }
+        Timer::after_millis(5000).await;
+    }
+}
+
 #[allow(
     clippy::large_stack_frames,
     reason = "it's not unusual to allocate larger buffers etc. in main"
@@ -124,12 +147,13 @@ async fn main(spawner: embassy_executor::Spawner) {
     // Spawn tasks
     spawner.spawn(broadcast_ping(tx, state).unwrap());
     spawner.spawn(receive_packet(rx, state).unwrap());
+    spawner.spawn(calculate_state(state).unwrap());
 
     loop {
         led.toggle();
         {
             let node_state = state.lock().await;
-            info!("{:?}", node_state.neighbour_matrix());
+            info!("neighbours:\n{:?}\nmds:\n{:?}", node_state.neighbour_matrix(), node_state.mds);
         }
         Timer::after(Duration::from_millis(3000)).await;
     }

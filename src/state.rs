@@ -2,12 +2,13 @@ use hashbrown::HashMap;
 use heapless::Vec;
 
 const RSSI_SCALE: f32 = 190.0;
-const MAX_SWARM_SIZE: usize = 10;
+pub const MAX_SWARM_SIZE: usize = 10;
 
 #[derive(Debug)]
 pub struct NodeState {
     pub mac: [u8; 6],
     pub neighbours: HashMap<[u8; 6], HashMap<[u8; 6], f32>>,
+    pub mds: Vec<Vec<f32, 2>, MAX_SWARM_SIZE>,
 }
 
 impl NodeState {
@@ -15,6 +16,7 @@ impl NodeState {
         let mut state = NodeState {
             mac,
             neighbours: HashMap::new(),
+            mds: Vec::default(),
         };
         state.neighbours.insert(mac, HashMap::new());
         state
