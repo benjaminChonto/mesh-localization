@@ -1,6 +1,6 @@
 [workspace]
 members = [
     "esp32-firmware",
-    # "telemetry-server",
+    "mesh-ui",
 ]
 resolver = "2"
