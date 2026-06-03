@@ -89,18 +89,17 @@ async fn receive_packet(
 }
 
 #[embassy_executor::task]
-async fn calculate_state(
-    state: &'static Mutex<CriticalSectionRawMutex, NodeState>
-) {
+async fn calculate_state(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
     let mut mds = MDS::default();
     loop {
-        let neighbour_dist = {
-            state.lock().await.neighbour_matrix()
-        };
-        if neighbour_dist.iter().any(|row| row.contains(&f32::INFINITY)) {
+        let neighbour_dist = { state.lock().await.neighbour_matrix() };
+        if neighbour_dist
+            .iter()
+            .any(|row| row.contains(&f32::INFINITY))
+        {
             // Neighbour matrix is incomplete
             Timer::after_millis(5000).await;
-            continue;    
+            continue;
         }
         let mds = mds.compute(neighbour_dist);
         {
@@ -153,7 +152,11 @@ async fn main(spawner: embassy_executor::Spawner) {
         led.toggle();
         {
             let node_state = state.lock().await;
-            info!("neighbours:\n{:?}\nmds:\n{:?}", node_state.neighbour_matrix(), node_state.mds);
+            info!(
+                "neighbours:\n{:?}\nmds:\n{:?}",
+                node_state.neighbour_matrix(),
+                node_state.mds
+            );
         }
         Timer::after(Duration::from_millis(3000)).await;
     }
