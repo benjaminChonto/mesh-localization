@@ -8,11 +8,15 @@
 #![deny(clippy::large_stack_frames)]
 
 extern crate alloc;
+use core::net::Ipv4Addr;
+
 use alloc::boxed::Box;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
+use embassy_net::tcp::TcpSocket;
+use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
@@ -20,14 +24,31 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use hashbrown::HashMap;
 use log::{error, info};
-use mesh_localization::mds::MDS;
-use mesh_localization::state::NodeState;
+use esp32_firmware::mds::MDS;
+use esp32_firmware::state::NodeState;
 use postcard::Error;
 use static_cell::StaticCell;
+use minimq::{Buffers, Publication, Session, ConfigBuilder};
+
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
+
+
+pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
+    Some(v) => v,
+    None => "AIVD Deurbel 42",
+};
+pub const WIFI_PASS: &str = match option_env!("WIFI_PASS") {
+    Some(v) => v,
+    None => "RoombaRobinCasaHouse666",
+};
+pub const IP_ADDR: &str = match option_env!("IP_ADDR") {
+    Some(v) => v,
+    None => "192.168.1.100",
+};
+
 
 const HEAP_SIZE: usize = 128 * 1024;
 const _DUMMY_MSG: [u8; 6] = [0u8; 6];
@@ -35,6 +56,12 @@ const BROADCAST: [u8; 6] = [0xff; 6];
 const _ID: Option<&str> = option_env!("ID");
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
+static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface<'static>>) {
+    runner.run().await
+}
 
 #[embassy_executor::task]
 async fn broadcast_ping(
@@ -127,12 +154,32 @@ async fn main(spawner: embassy_executor::Spawner) {
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     // Setup ESP-NOW
-    let (_wifi_controller, interfaces) =
+    let (mut wifi_controller, interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default()).unwrap();
     let mac = interfaces.station.mac_address();
     info!("Device MAC address {:?}", mac);
+
+    wifi_controller
+        .set_config(&esp_radio::wifi::Config::Station(
+            esp_radio::wifi::sta::StationConfig::default()
+                .with_ssid(WIFI_SSID)
+                .with_password(WIFI_PASS.into()),
+        ))
+        .unwrap();
+    info!("Connecting to '{}'…", WIFI_SSID);
+    wifi_controller.connect_async().await.unwrap();
+    info!("Associated with '{}'", WIFI_SSID);
+
+    let (stack, runner) = embassy_net::new(
+        interfaces.station,
+        Config::dhcpv4(Default::default()),
+        STACK_RESOURCES.init(StackResources::new()),
+        esp_hal::rng::Rng::new().random() as u64,
+    );
+    spawner.spawn(net_task(runner).unwrap());
+
     let esp_now = interfaces.esp_now;
-    esp_now.set_channel(1).unwrap();
+    // esp_now.set_channel(1).unwrap();
 
     // On board status led
     let mut led =
@@ -148,16 +195,37 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(receive_packet(rx, state).unwrap());
     spawner.spawn(calculate_state(state).unwrap());
 
+    // MQTT Setup
+    let rx_mqtt = &mut [0u8; 256];
+    let tx_mqtt = &mut [0u8; 1024];
+    let rx_tcp = &mut [0u8; 256];
+    let tx_tcp = &mut [0u8; 1024];
+    let mut mqtt_session = Session::new(
+        ConfigBuilder::new(Buffers::new(rx_mqtt, tx_mqtt))
+    );
+    let mut socket = TcpSocket::new(stack, rx_tcp, tx_tcp);
+    info!("Connecting to MQTT server ...",);
+    let _ = socket.connect(IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::new(127, 168, 0, 1)), 1883)).await;
+
     loop {
-        led.toggle();
-        {
-            let node_state = state.lock().await;
-            info!(
-                "neighbours:\n{:?}\nmds:\n{:?}",
-                node_state.neighbour_matrix(),
-                node_state.mds
-            );
+        match mqtt_session.connect(socket).await {
+            // TODO handle properly and check results of connections / publishing
+            Ok(_v) => {}
+            Err(_v) => {}
         }
-        Timer::after(Duration::from_millis(3000)).await;
+        loop {
+            led.toggle();
+            {
+                let node_state = state.lock().await;
+                info!(
+                    "neighbours:\n{:?}\nmds:\n{:?}",
+                    node_state.neighbour_matrix(),
+                    node_state.mds
+                );
+            }
+            let _ = mqtt_session.publish(Publication::new("test", "")).await;
+            // todo: check publish state and break if connection lost (outer loop will reconnect)
+            Timer::after(Duration::from_millis(1000)).await;
+        }
     }
 }
