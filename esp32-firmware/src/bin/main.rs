@@ -9,30 +9,28 @@
 
 extern crate alloc;
 
+use embassy_net::tcp::TcpSocket;
+use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
-use embassy_net::tcp::TcpSocket;
-use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
-use hashbrown::HashMap;
-use log::{error, info};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::state::NodeState;
+use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, IP_ADDR, MDS_MAX_SIZE, WIFI_PASS, WIFI_SSID};
+use hashbrown::HashMap;
+use log::{error, info};
+use minimq::{Buffers, ConfigBuilder, Publication, Session};
 use postcard::Error;
 use static_cell::StaticCell;
-use minimq::{Buffers, Publication, Session, ConfigBuilder};
-use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, IP_ADDR, MDS_MAX_SIZE, WIFI_PASS, WIFI_SSID};
-
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
-
 
 const HEAP_SIZE: usize = 128 * 1024;
 const _DUMMY_MSG: [u8; 6] = [0u8; 6];
@@ -54,7 +52,8 @@ async fn broadcast_ping(
     let mut serializer_buff = [0u8; DISTANCE_MAP_MAX_SIZE];
 
     loop {
-        let distances = { // mac addr-> 6 * 10 * 4
+        let distances = {
+            // mac addr-> 6 * 10 * 4
             let node_state = state.lock().await;
             node_state.neighbours.get(&node_state.mac).cloned()
         };
@@ -178,7 +177,6 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(receive_packet(rx, state).unwrap());
     spawner.spawn(calculate_state(state).unwrap());
 
-
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];
     loop {
         // MQTT Setup
@@ -186,19 +184,24 @@ async fn main(spawner: embassy_executor::Spawner) {
         let mut tx_mqtt = [0u8; 1024];
         let mut rx_tcp = [0u8; 256];
         let mut tx_tcp = [0u8; 1024];
-        let mut mqtt_session = Session::new(
-            ConfigBuilder::new(Buffers::new(&mut rx_mqtt, &mut tx_mqtt))
-        );
+        let mut mqtt_session =
+            Session::new(ConfigBuilder::new(Buffers::new(&mut rx_mqtt, &mut tx_mqtt)));
 
         let mut socket = TcpSocket::new(stack, &mut rx_tcp, &mut tx_tcp);
         info!("Connecting to MQTT server ...",);
-        if let Err(e) = socket.connect(IpEndpoint::new(IpAddress::Ipv4(IP_ADDR.parse().unwrap()), 1883)).await {
+        if let Err(e) = socket
+            .connect(IpEndpoint::new(
+                IpAddress::Ipv4(IP_ADDR.parse().unwrap()),
+                1883,
+            ))
+            .await
+        {
             error!("Failed to connect to mosquitto: {:?}", e);
         }
 
         // TODO handle properly and check results of connections / publishing
         let _ = mqtt_session.connect(socket).await.inspect_err(|e| {
-                error!("Connection failed: {:?}", e);
+            error!("Connection failed: {:?}", e);
         });
 
         loop {
@@ -215,11 +218,11 @@ async fn main(spawner: embassy_executor::Spawner) {
                     Err(_) => &[], // todo consider creating error codes and publishing to mq
                 };
                 match mqtt_session.publish(Publication::new("mds", msg)).await {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(minimq::PubError::Session(e)) => {
                         error!("Connection failed, reconnecting ... {}", e);
                         break;
-                    },
+                    }
                     Err(e) => {
                         error!("Payload serialization error: {}", e)
                     }
