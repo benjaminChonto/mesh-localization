@@ -1,7 +1,6 @@
 /**
  * Environment variables and global constants
  */
-
 pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
     Some(v) => v,
     None => "bcsonto_network",
