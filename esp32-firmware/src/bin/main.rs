@@ -41,7 +41,7 @@ static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface<'static>>) {
-    runner.run().await
+    runner.run().await;
 }
 
 #[embassy_executor::task]
@@ -68,7 +68,7 @@ async fn broadcast_ping(
                 log::warn!("Could not send message {e}");
             }
         }
-        Timer::after_secs(2).await
+        Timer::after_secs(2).await;
     }
 }
 
@@ -89,7 +89,7 @@ async fn receive_packet(
             node_state.add_distance(mac, src, rssi);
             let _ = data
                 .map(|d| node_state.add_neighbour_measurement(src, d))
-                .inspect_err(|e| error!("Failed to update data: {:?}", e));
+                .inspect_err(|e| error!("Failed to update data: {e:?}"));
 
             // info!("from={:02x?} rssi={}; data={:?}", src, rssi, data.unwrap_or_default());
         }
@@ -139,7 +139,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let (mut wifi_controller, interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default()).unwrap();
     let mac = interfaces.station.mac_address();
-    info!("Device MAC address {:?}", mac);
+    info!("Device MAC address {mac:?}");
 
     wifi_controller
         .set_config(&esp_radio::wifi::Config::Station(
@@ -148,15 +148,15 @@ async fn main(spawner: embassy_executor::Spawner) {
                 .with_password(WIFI_PASS.into()),
         ))
         .unwrap();
-    info!("Connecting to '{}'…", WIFI_SSID);
+    info!("Connecting to '{WIFI_SSID}'…");
     wifi_controller.connect_async().await.unwrap();
-    info!("Associated with '{}'", WIFI_SSID);
+    info!("Associated with '{WIFI_SSID}'");
 
     let (stack, runner) = embassy_net::new(
         interfaces.station,
         Config::dhcpv4(Default::default()),
         STACK_RESOURCES.init(StackResources::new()),
-        esp_hal::rng::Rng::new().random() as u64,
+        u64::from(esp_hal::rng::Rng::new().random()),
     );
     spawner.spawn(net_task(runner).unwrap());
     stack.wait_config_up().await;
@@ -196,12 +196,12 @@ async fn main(spawner: embassy_executor::Spawner) {
             ))
             .await
         {
-            error!("Failed to connect to mosquitto: {:?}", e);
+            error!("Failed to connect to mosquitto: {e:?}");
         }
 
         // TODO handle properly and check results of connections / publishing
         let _ = mqtt_session.connect(socket).await.inspect_err(|e| {
-            error!("Connection failed: {:?}", e);
+            error!("Connection failed: {e:?}");
         });
 
         loop {
@@ -220,11 +220,11 @@ async fn main(spawner: embassy_executor::Spawner) {
                 match mqtt_session.publish(Publication::new("mds", msg)).await {
                     Ok(_) => {}
                     Err(minimq::PubError::Session(e)) => {
-                        error!("Connection failed, reconnecting ... {}", e);
+                        error!("Connection failed, reconnecting ... {e}");
                         break;
                     }
                     Err(e) => {
-                        error!("Payload serialization error: {}", e)
+                        error!("Payload serialization error: {e}");
                     }
                 }
             }

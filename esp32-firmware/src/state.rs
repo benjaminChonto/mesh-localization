@@ -45,7 +45,8 @@ impl NodeState {
         self.neighbours.keys().for_each(|&node| {
             let _ = vec.push(node);
         });
-        vec.sort();
+        // Mac addresses are unique, so this is fine (more performant then regular sort)
+        vec.sort_unstable();
 
         let matrix: Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> = vec
             .iter()
