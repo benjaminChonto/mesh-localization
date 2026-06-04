@@ -1563,6 +1563,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
 dependencies = [
  "hash32 0.3.1",
+ "serde_core",
  "stable_deref_trait",
 ]
 
@@ -1848,6 +1849,8 @@ version = "0.1.0"
 dependencies = [
  "color-eyre",
  "crossterm",
+ "heapless 0.9.3",
+ "postcard",
  "ratatui",
  "rumqttc",
 ]

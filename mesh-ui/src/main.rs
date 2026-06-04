@@ -13,8 +13,9 @@ fn read_mqtt(tx: Sender<String>) {
     for event in connection.iter() {
         match event {
             Ok(Event::Incoming(Incoming::Publish(packet))) => {
-                let payload = String::from_utf8_lossy(&packet.payload);
-                tx.send(format!("{}", payload));
+                let data: heapless::Vec<heapless::Vec<f32, 2>, 10> = postcard::from_bytes(&packet.payload).unwrap();
+                // let payload = String::from_utf8_lossy(&packet.payload);
+                tx.send(format!("{:?}", data));
             },
             Ok(_) => {},
             Err(e) => {

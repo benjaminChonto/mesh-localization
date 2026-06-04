@@ -8,10 +8,6 @@
 #![deny(clippy::large_stack_frames)]
 
 extern crate alloc;
-use core::net::Ipv4Addr;
-
-use alloc::boxed::Box;
-use alloc::format;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -30,6 +26,7 @@ use esp32_firmware::state::NodeState;
 use postcard::Error;
 use static_cell::StaticCell;
 use minimq::{Buffers, Publication, Session, ConfigBuilder};
+use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, IP_ADDR, MDS_MAX_SIZE, WIFI_PASS, WIFI_SSID};
 
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -37,24 +34,9 @@ use minimq::{Buffers, Publication, Session, ConfigBuilder};
 esp_bootloader_esp_idf::esp_app_desc!();
 
 
-pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
-    Some(v) => v,
-    None => "bcsonto_network",
-};
-pub const WIFI_PASS: &str = match option_env!("WIFI_PASS") {
-    Some(v) => v,
-    None => "Charlie123",
-};
-pub const IP_ADDR: &str = match option_env!("IP_ADDR") {
-    Some(v) => v,
-    None => "10.51.232.13",
-};
-
-
 const HEAP_SIZE: usize = 128 * 1024;
 const _DUMMY_MSG: [u8; 6] = [0u8; 6];
 const BROADCAST: [u8; 6] = [0xff; 6];
-const _ID: Option<&str> = option_env!("ID");
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
@@ -69,15 +51,15 @@ async fn broadcast_ping(
     mut tx: EspNowSender<'static>,
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
 ) {
-    let static_buff: &'static mut [u8; 256] = Box::leak(Box::new([0u8; 256]));
+    let mut serializer_buff = [0u8; DISTANCE_MAP_MAX_SIZE];
 
     loop {
-        let distances = {
+        let distances = { // mac addr-> 6 * 10 * 4
             let node_state = state.lock().await;
             node_state.neighbours.get(&node_state.mac).cloned()
         };
 
-        let msg = postcard::to_slice(&distances.unwrap_or_default(), &mut static_buff[..]).unwrap();
+        let msg = postcard::to_slice(&distances.unwrap_or_default(), &mut serializer_buff).unwrap();
 
         match tx.send(&BROADCAST, msg) {
             Ok(waiter) => {
@@ -196,25 +178,27 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(receive_packet(rx, state).unwrap());
     spawner.spawn(calculate_state(state).unwrap());
 
-    // MQTT Setup
-    let rx_mqtt = &mut [0u8; 256];
-    let tx_mqtt = &mut [0u8; 1024];
-    let rx_tcp = &mut [0u8; 256];
-    let tx_tcp = &mut [0u8; 1024];
-    let mut mqtt_session = Session::new(
-        ConfigBuilder::new(Buffers::new(rx_mqtt, tx_mqtt))
-    );
-    let mut socket = TcpSocket::new(stack, rx_tcp, tx_tcp);
-    info!("Connecting to MQTT server ...",);
-    match socket.connect(IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::new(10, 51, 232, 13)), 1883)).await {
-        Ok(_) => {},
-        Err(e) => {info!("Failed to connect to mosquitto: {:?}", e)}
-    }
 
+    let mut serializer_buff = [0u8; MDS_MAX_SIZE];
     loop {
+        // MQTT Setup
+        let mut rx_mqtt = [0u8; 256];
+        let mut tx_mqtt = [0u8; 1024];
+        let mut rx_tcp = [0u8; 256];
+        let mut tx_tcp = [0u8; 1024];
+        let mut mqtt_session = Session::new(
+            ConfigBuilder::new(Buffers::new(&mut rx_mqtt, &mut tx_mqtt))
+        );
+
+        let mut socket = TcpSocket::new(stack, &mut rx_tcp, &mut tx_tcp);
+        info!("Connecting to MQTT server ...",);
+        if let Err(e) = socket.connect(IpEndpoint::new(IpAddress::Ipv4(IP_ADDR.parse().unwrap()), 1883)).await {
+            error!("Failed to connect to mosquitto: {:?}", e);
+        }
+
         // TODO handle properly and check results of connections / publishing
         let _ = mqtt_session.connect(socket).await.inspect_err(|e| {
-                info!("Connection failed: {:?}", e);
+                error!("Connection failed: {:?}", e);
         });
 
         loop {
@@ -226,13 +210,22 @@ async fn main(spawner: embassy_executor::Spawner) {
                     node_state.neighbour_matrix(),
                     node_state.mds
                 );
-                let _ = mqtt_session.publish(Publication::new("mds", format!("{:?}", node_state.mds).as_bytes())).await
-                    .inspect_err(|e| {
-                    info!("{:?}", e);
-                });
+                let msg: &[u8] = match postcard::to_slice(&node_state.mds, &mut serializer_buff) {
+                    Ok(rs) => rs,
+                    Err(_) => &[], // todo consider creating error codes and publishing to mq
+                };
+                match mqtt_session.publish(Publication::new("mds", msg)).await {
+                    Ok(_) => {},
+                    Err(minimq::PubError::Session(e)) => {
+                        error!("Connection failed, reconnecting ... {}", e);
+                        break;
+                    },
+                    Err(e) => {
+                        error!("Payload serialization error: {}", e)
+                    }
+                }
             }
 
-            // todo: check publish state and break if connection lost (outer loop will reconnect)
             Timer::after(Duration::from_millis(3000)).await;
         }
     }
