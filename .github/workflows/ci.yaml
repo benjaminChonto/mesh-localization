@@ -38,6 +38,6 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: 
+        run: |
           cargo clippy -p esp32-firmware --target riscv32imc-unknown-none-elf --all-features -- -W clippy::all -W clippy::pedantic
           cargo clippy -p mesh-ui --all-features -- -W clippy::all -W clippy::pedantic
