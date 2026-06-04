@@ -11,6 +11,7 @@ extern crate alloc;
 use core::net::Ipv4Addr;
 
 use alloc::boxed::Box;
+use alloc::format;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -38,15 +39,15 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
     Some(v) => v,
-    None => "AIVD Deurbel 42",
+    None => "bcsonto_network",
 };
 pub const WIFI_PASS: &str = match option_env!("WIFI_PASS") {
     Some(v) => v,
-    None => "RoombaRobinCasaHouse666",
+    None => "Charlie123",
 };
 pub const IP_ADDR: &str = match option_env!("IP_ADDR") {
     Some(v) => v,
-    None => "192.168.1.100",
+    None => "10.51.232.13",
 };
 
 
@@ -177,7 +178,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         esp_hal::rng::Rng::new().random() as u64,
     );
     spawner.spawn(net_task(runner).unwrap());
-
+    stack.wait_config_up().await;
     let esp_now = interfaces.esp_now;
     // esp_now.set_channel(1).unwrap();
 
@@ -205,14 +206,17 @@ async fn main(spawner: embassy_executor::Spawner) {
     );
     let mut socket = TcpSocket::new(stack, rx_tcp, tx_tcp);
     info!("Connecting to MQTT server ...",);
-    let _ = socket.connect(IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::new(127, 168, 0, 1)), 1883)).await;
+    match socket.connect(IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::new(10, 51, 232, 13)), 1883)).await {
+        Ok(_) => {},
+        Err(e) => {info!("Failed to connect to mosquitto: {:?}", e)}
+    }
 
     loop {
-        match mqtt_session.connect(socket).await {
-            // TODO handle properly and check results of connections / publishing
-            Ok(_v) => {}
-            Err(_v) => {}
-        }
+        // TODO handle properly and check results of connections / publishing
+        let _ = mqtt_session.connect(socket).await.inspect_err(|e| {
+                info!("Connection failed: {:?}", e);
+        });
+
         loop {
             led.toggle();
             {
@@ -222,10 +226,14 @@ async fn main(spawner: embassy_executor::Spawner) {
                     node_state.neighbour_matrix(),
                     node_state.mds
                 );
+                let _ = mqtt_session.publish(Publication::new("mds", format!("{:?}", node_state.mds).as_bytes())).await
+                    .inspect_err(|e| {
+                    info!("{:?}", e);
+                });
             }
-            let _ = mqtt_session.publish(Publication::new("test", "")).await;
+
             // todo: check publish state and break if connection lost (outer loop will reconnect)
-            Timer::after(Duration::from_millis(1000)).await;
+            Timer::after(Duration::from_millis(3000)).await;
         }
     }
 }
