@@ -11,19 +11,15 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 use alloc::format;
-use bt_hci::controller::ExternalController;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
 use esp_hal::timer::timg::TimerGroup;
-use esp_radio::ble::controller::BleConnector;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use log::info;
 use mesh_localization::state::NodeState;
-use static_cell::StaticCell;
-use trouble_host::prelude::*;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -37,7 +33,6 @@ const ID: Option<&str> = option_env!("ID");
 // TODO i do not like that this is global but it needs static lifetime for the channel to be shared
 // across tasks.
 static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, 265> = Channel::new();
-static RESOURCES: StaticCell<HostResources<DefaultPacketPool, 2, 4>> = StaticCell::new();
 
 // TODO maybe move this struct to somewhere else?
 #[derive(Clone, Copy)]
@@ -67,6 +62,8 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>) {
     }
 }
 
+// TODO idk if this will overflow
+#[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn receive_packet(rx: EspNowReceiver<'static>) {
     loop {

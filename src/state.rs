@@ -2,7 +2,6 @@ extern crate alloc;
 
 use hashbrown::HashMap;
 
-use alloc::format;
 use heapless::Vec;
 use libm::powf;
 use log::info;
