@@ -49,69 +49,6 @@ pub struct RxPacket {
 }
 
 #[embassy_executor::task]
-async fn ble_runner(runner: Runner<'static, ExternalController<BleConnector<'static>, 20>>) {
-    runner.run().await.unwrap();
-}
-
-#[embassy_executor::task]
-async fn ble_advertise_and_scan(
-    mut peripheral: Peripheral<'static, DefaultPacketPool>,
-    mut central: Central<'static, DefaultPacketPool>,
-) {
-    let id = ID.unwrap_or("0");
-    let mut seq: i32 = 0;
-
-    loop {
-        // --- Advertise window ---
-        let adv_payload = format!("{}:\t{}", id, seq);
-        if let Ok(mut adv) = peripheral
-            .advertise(
-                &AdvertisementParameters {
-                    timeout: Some(Duration::from_millis(20)),
-                    ..Default::default()
-                },
-                Advertisement::NonconnectableScannableUndirected {
-                    adv_data: &adv_payload.as_bytes(),
-                    scan_data: &[],
-                },
-            )
-            .await
-        {
-            let _ = adv.accept().await; // returns after timeout
-        }
-        seq += 1;
-
-        // --- Scan window ---
-        if let Ok(mut scanner) = central
-            .scan(&ScanConfig {
-                timeout: Duration::from_millis(30),
-                ..Default::default()
-            })
-            .await
-        {
-            while let Some(report) = scanner.next().await {
-                let rssi = report.rssi as i8;
-                let src = report.addr.bytes;
-                let payload = report.data.as_ref();
-                let len = payload.len().min(250);
-                let mut data = [0u8; 250];
-                data[..len].copy_from_slice(&payload[..len]);
-
-                let _ = RX_CHANNEL
-                    .send(RxPacket {
-                        src,
-                        rssi,
-                        len: len as u16,
-                        data,
-                    })
-                    .await;
-            }
-            // scanner drops here when timeout expires
-        }
-    }
-}
-
-#[embassy_executor::task]
 async fn broadcast_ping(mut tx: EspNowSender<'static>) {
     let mut seq: i32 = 0;
     let id = ID.unwrap_or("0");
@@ -126,7 +63,7 @@ async fn broadcast_ping(mut tx: EspNowSender<'static>) {
             }
         }
         seq += 1;
-        Timer::after_millis(25).await
+        Timer::after_millis(5).await
     }
 }
 
@@ -216,28 +153,6 @@ async fn main(spawner: embassy_executor::Spawner) {
     let state = NodeState::default();
     let state = Box::leak(Box::new(state));
     let (_, tx, rx) = esp_now.split();
-
-    // BLE
-    let transport = BleConnector::new(peripherals.BT, Default::default()).unwrap();
-    let ble_controller = ExternalController::<_, 20>::new(transport);
-
-    let (stack, peripheral, central, runner) = trouble_host::new(ble_controller, resources)
-        .set_random_address(Address::random(mac)) // reuse your WiFi MAC or derive one
-        .build();
-
-    let resources = RESOURCES.init(HostResources::new());
-
-    let Host {
-        runner,
-        central,
-        peripheral,
-        ..
-    } = trouble_host::new(ble_controller, resources)
-        .set_random_address(Address::random([0x42, 0x41, 0x40, 0x03, 0x02, 0x01]))
-        .build();
-
-    spawner.spawn(ble_runner(runner).unwrap());
-    spawner.spawn(ble_advertise_and_scan(peripheral, central).unwrap());
 
     // Spawn tasks
     spawner.spawn(broadcast_ping(tx).unwrap());
