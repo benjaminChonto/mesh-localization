@@ -5,6 +5,7 @@ use hashbrown::HashMap;
 use heapless::Vec;
 use libm::powf;
 use serde::{Deserialize, Serialize};
+use shared::MdsResult;
 
 pub const MAX_SWARM_SIZE: usize = 10;
 const RSSI_ONE_METER: f32 = -56.0;
@@ -115,7 +116,7 @@ fn dist_from_rssi(rssi: f32) -> f32 {
 pub struct NodeState {
     pub mac: [u8; 6],
     pub neighbours: HashMap<[u8; 6], HashMap<[u8; 6], State>>,
-    pub mds: Vec<Vec<f32, 2>, MAX_SWARM_SIZE>,
+    pub mds: MdsResult,
 }
 
 impl NodeState {

@@ -9,6 +9,7 @@ name = "esp32-firmware"
 path = "./src/bin/main.rs"
 
 [dependencies]
+shared = { path = "../shared" }
 esp-hal = { version = "1.1", features = ["esp32c3", "log-04", "unstable"] }
 esp-bootloader-esp-idf = { version = "0.5", features = ["esp32c3"] }        # your chip
 

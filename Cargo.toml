@@ -1,6 +1,6 @@
 [workspace]
 members = [
     "esp32-firmware",
-    "mesh-ui",
+    "mesh-ui", "shared",
 ]
 resolver = "2"
