@@ -21,7 +21,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::state::{NodeState, State};
-use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, MDS_MAX_SIZE, RX_CHANNEL_SIZE};
+use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, RX_CHANNEL_SIZE};
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
 use log::{error, info};
@@ -215,6 +215,10 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(receive_packet(rx).unwrap());
     spawner.spawn(process_packet(state).unwrap());
     spawner.spawn(calculate_state(state).unwrap());
+
+    if ID == "1" {
+        spawner.spawn(calculate_state(state).unwrap());
+    }
 
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];
     loop {
