@@ -143,7 +143,7 @@ impl NodeState {
     // method that updates the measurement from the current node to the node that it just received a
     // broadcast from
     // src = own node, address = node we received it from
-    pub fn add_distance(&mut self, src_node: [u8; 6], address: [u8; 6], rssi: i32) {
+    pub fn add_distance(&mut self, src_node: [u8; 6], address: [u8; 6], rssi: i8) {
         let state_map = self
             .neighbours
             .get_mut(&src_node)
