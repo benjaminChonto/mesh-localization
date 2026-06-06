@@ -65,3 +65,9 @@ incremental = false
 lto = 'fat'
 opt-level = 's'
 overflow-checks = false
+[workspace]
+members = [
+    "esp32-firmware",
+    "mesh-ui",
+]
+resolver = "2"
