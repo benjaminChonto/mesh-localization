@@ -31,3 +31,6 @@ __pycache__/
 # Manim
 media/
 
+# Individual configuration
+esp32-firmware/src/wificonfig.rs
+
