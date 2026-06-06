@@ -21,7 +21,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::state::{NodeState, State};
-use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, MDS_MAX_SIZE};
+use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, MDS_MAX_SIZE, RX_CHANNEL_SIZE};
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
 use log::{error, info};
@@ -39,7 +39,7 @@ const BROADCAST: [u8; 6] = [0xff; 6];
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, 256> = Channel::new();
+static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, RX_CHANNEL_SIZE> = Channel::new();
 
 // TODO maybe move this struct to somewhere else?
 #[derive(Clone, Copy)]

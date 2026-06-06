@@ -32,5 +32,5 @@ __pycache__/
 media/
 
 # Individual configuration
-esp32-firmware/src/wificonfig.rs
+# esp32-firmware/src/wificonfig.rs
 
