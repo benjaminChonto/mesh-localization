@@ -50,8 +50,6 @@ impl MDS {
                         } else {
                             let _ = row.push(0.0);
                         }
-                    } else {
-                        let _ = row.push(0.0);
                     }
                 }
                 row[i] = -row.iter().sum::<f32>();
