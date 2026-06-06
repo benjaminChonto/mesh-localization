@@ -20,7 +20,7 @@ use esp_hal::gpio::{Level, OutputConfig};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
-use esp32_firmware::state::NodeState;
+use esp32_firmware::state::{NodeState, State};
 use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, IP_ADDR, MDS_MAX_SIZE, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
 use log::{error, info};
@@ -82,16 +82,14 @@ async fn receive_packet(
         while let Some(packet) = rx.receive() {
             let rssi = packet.info.rx_control.rssi;
             let src = packet.info.src_address;
-            let data: Result<HashMap<[u8; 6], f32>, Error> = postcard::from_bytes(packet.data());
+            let data: Result<HashMap<[u8; 6], State>, Error> = postcard::from_bytes(packet.data());
 
             let mut node_state = state.lock().await;
-            let mac = node_state.mac;
+            let mac = node_state.mac; // own mac address
             node_state.add_distance(mac, src, rssi);
             let _ = data
                 .map(|d| node_state.add_neighbour_measurement(src, d))
                 .inspect_err(|e| error!("Failed to update data: {e:?}"));
-
-            // info!("from={:02x?} rssi={}; data={:?}", src, rssi, data.unwrap_or_default());
         }
         Timer::after_millis(1000).await;
     }

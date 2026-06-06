@@ -11,7 +11,7 @@ pub const WIFI_PASS: &str = match option_env!("WIFI_PASS") {
 };
 pub const IP_ADDR: &str = match option_env!("IP_ADDR") {
     Some(v) => v,
-    None => "10.51.232.13",
+    None => "145.94.198.105",
 };
 pub const _ID: Option<&str> = option_env!("ID");
 
