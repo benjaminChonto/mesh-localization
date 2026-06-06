@@ -12,7 +12,7 @@ pub struct MDS {
 
 impl MDS {
     /**
-     * SMACOF algorithm: https://www.jstatsoft.org/article/view/v031i03
+     * SMACOF algorithm: <https://www.jstatsoft.org/article/view/v031i03>
      * Here we use unweighted version to avoid having to construct a pseudo-inverse matrix
      *
      * Basic outline:
@@ -32,7 +32,7 @@ impl MDS {
         let D = make_symmetric(d);
         let n: usize = D.len();
         if self.X.is_empty() || self.X.len() != n {
-            self.X = initialize_mds(n)
+            self.X = initialize_mds(n);
         }
 
         for _ in 0..MDS_ITERATIONS {
@@ -41,7 +41,9 @@ impl MDS {
             for i in 0..n {
                 let mut row = Vec::<f32, MAX_SWARM_SIZE>::new();
                 for j in 0..n {
-                    if i != j {
+                    if i == j {
+                        let _ = row.push(0.0);
+                    } else {
                         if dist[i][j] > 1e-6 {
                             let scale = -D[i][j] / dist[i][j];
                             let _ = row.push(scale);

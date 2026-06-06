@@ -11,8 +11,8 @@ extern crate alloc;
 
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
@@ -20,8 +20,9 @@ use esp_hal::gpio::{Level, OutputConfig};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
-use esp32_firmware::state::NodeState;
-use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, IP_ADDR, MDS_MAX_SIZE, WIFI_PASS, WIFI_SSID};
+use esp32_firmware::state::{NodeState, State};
+use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, MDS_MAX_SIZE, RX_CHANNEL_SIZE};
+use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
 use log::{error, info};
 use minimq::{Buffers, ConfigBuilder, Publication, Session};
@@ -38,6 +39,16 @@ const BROADCAST: [u8; 6] = [0xff; 6];
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, RX_CHANNEL_SIZE> = Channel::new();
+
+// TODO maybe move this struct to somewhere else?
+#[derive(Clone, Copy)]
+pub struct RxPacket {
+    pub src: [u8; 6],
+    pub rssi: i8,
+    pub len: usize,
+    pub data: [u8; 256], // TODO figure out max data packet len
+}
 
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface<'static>>) {
@@ -68,32 +79,59 @@ async fn broadcast_ping(
                 log::warn!("Could not send message {e}");
             }
         }
-        Timer::after_secs(2).await;
+        Timer::after_millis(500).await;
+    }
+}
+
+// TODO idk if this will overflow
+#[allow(clippy::large_stack_frames)]
+#[embassy_executor::task]
+async fn receive_packet(rx: EspNowReceiver<'static>) {
+    loop {
+        while let Some(packet) = rx.receive() {
+            let rssi = packet.info.rx_control.rssi as i8;
+            let src = packet.info.src_address;
+
+            let payload = packet.data();
+            let len = payload.len().min(256);
+
+            // copy to pass ownership
+            let mut data = [0u8; 256];
+            data[..len].copy_from_slice(&payload[..len]);
+
+            let _ = RX_CHANNEL
+                .send(RxPacket {
+                    src,
+                    rssi,
+                    len,
+                    data,
+                })
+                .await; // yield if channel is full
+        }
+
+        Timer::after_millis(100).await;
     }
 }
 
 #[embassy_executor::task]
-async fn receive_packet(
-    rx: EspNowReceiver<'static>,
-    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
-) {
+async fn process_packet(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
     loop {
-        // TODO: Consider offloading to a queue and processing in a separate task
-        while let Some(packet) = rx.receive() {
-            let rssi = packet.info.rx_control.rssi;
-            let src = packet.info.src_address;
-            let data: Result<HashMap<[u8; 6], f32>, Error> = postcard::from_bytes(packet.data());
+        while let Ok(packet) = RX_CHANNEL.try_receive() {
+            let data: Result<HashMap<[u8; 6], State>, Error> =
+                postcard::from_bytes(&packet.data[..packet.len]);
 
             let mut node_state = state.lock().await;
-            let mac = node_state.mac;
-            node_state.add_distance(mac, src, rssi);
+            let mac = node_state.mac; // own mac address
+            node_state.update_distance_from_self(mac, packet.src, packet.rssi);
             let _ = data
-                .map(|d| node_state.add_neighbour_measurement(src, d))
+                .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
                 .inspect_err(|e| error!("Failed to update data: {e:?}"));
-
-            // info!("from={:02x?} rssi={}; data={:?}", src, rssi, data.unwrap_or_default());
         }
-        Timer::after_millis(1000).await;
+
+        // TODO this is random timing, might want to mess with it
+        // if i didnt have this i think this task stalled the draining of the channel
+        // and if i added a 3rd esp it would go slower for it
+        Timer::after_millis(10).await;
     }
 }
 
@@ -174,7 +212,8 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     // Spawn tasks
     spawner.spawn(broadcast_ping(tx, state).unwrap());
-    spawner.spawn(receive_packet(rx, state).unwrap());
+    spawner.spawn(receive_packet(rx).unwrap());
+    spawner.spawn(process_packet(state).unwrap());
     spawner.spawn(calculate_state(state).unwrap());
 
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];
