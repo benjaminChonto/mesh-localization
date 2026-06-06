@@ -4,7 +4,6 @@ use hashbrown::HashMap;
 
 use heapless::Vec;
 use libm::powf;
-use log::info;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_SWARM_SIZE: usize = 10;
@@ -62,15 +61,16 @@ impl RssiWindow {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct State {
     pub rssi: i8,       // raw latest RSSI (for display/debug)
-    ema_rssi: f32,      // EMA-smoothed, spike-filtered value
+    pub ema_rssi: f32,  // EMA-smoothed, spike-filtered value
     window: RssiWindow, // sliding window for spike reference
     pub dist: f32,
     pub count: u32,
 }
 
 impl State {
+    #[must_use]
     pub fn new(rssi: i8) -> State {
-        let f = rssi as f32;
+        let f = f32::from(rssi);
         State {
             rssi,
             ema_rssi: f,
@@ -84,7 +84,7 @@ impl State {
         self.rssi = rssi;
         self.count += 1;
 
-        let raw = rssi as f32;
+        let raw = f32::from(rssi);
         let win_mean = self.window.mean();
 
         // If the new sample is a outlier vs. the recent window mean,
@@ -105,12 +105,6 @@ impl State {
 
         self.dist = dist_from_rssi(self.ema_rssi);
     }
-
-    /// Smoothed RSSI that drives distance estimation.
-    #[inline]
-    pub fn smoothed_rssi(&self) -> f32 {
-        self.ema_rssi
-    }
 }
 
 #[inline]
@@ -126,6 +120,7 @@ pub struct NodeState {
 }
 
 impl NodeState {
+    #[must_use]
     pub fn new(mac: [u8; 6]) -> NodeState {
         let mut state = NodeState {
             mac,
@@ -140,6 +135,7 @@ impl NodeState {
         self.neighbours.insert(mac, HashMap::new());
     }
 
+    /// mehod might panic if the node is not in its own hash map
     // method that updates the measurement from the current node to the node that it just received a
     // broadcast from
     // src = own node, address = node we received it from
@@ -150,8 +146,8 @@ impl NodeState {
             .expect("Node's mac address should have been set upon initialization");
         state_map
             .entry(other_addr)
-            .and_modify(|state| state.update(rssi as i8))
-            .or_insert_with(|| State::new(rssi as i8));
+            .and_modify(|state| state.update(rssi))
+            .or_insert_with(|| State::new(rssi));
     }
 
     // method that updates the matrix of measurements that a node has of its neighbours

@@ -39,7 +39,7 @@ const BROADCAST: [u8; 6] = [0xff; 6];
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, 265> = Channel::new();
+static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, 256> = Channel::new();
 
 // TODO maybe move this struct to somewhere else?
 #[derive(Clone, Copy)]
