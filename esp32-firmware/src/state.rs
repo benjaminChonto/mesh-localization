@@ -143,19 +143,19 @@ impl NodeState {
     // method that updates the measurement from the current node to the node that it just received a
     // broadcast from
     // src = own node, address = node we received it from
-    pub fn add_distance(&mut self, src_node: [u8; 6], address: [u8; 6], rssi: i8) {
+    pub fn update_distance_from_self(&mut self, self_addr: [u8; 6], other_addr: [u8; 6], rssi: i8) {
         let state_map = self
             .neighbours
-            .get_mut(&src_node)
+            .get_mut(&self_addr)
             .expect("Node's mac address should have been set upon initialization");
         state_map
-            .entry(address)
+            .entry(other_addr)
             .and_modify(|state| state.update(rssi as i8))
             .or_insert_with(|| State::new(rssi as i8));
     }
 
     // method that updates the matrix of measurements that a node has of its neighbours
-    pub fn add_neighbour_measurement(
+    pub fn update_measurements_from_neighbor(
         &mut self,
         mac: [u8; 6],
         measurements: HashMap<[u8; 6], State>,

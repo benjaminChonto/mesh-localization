@@ -21,7 +21,8 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::state::{NodeState, State};
-use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, IP_ADDR, MDS_MAX_SIZE, WIFI_PASS, WIFI_SSID};
+use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, MDS_MAX_SIZE};
+use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
 use log::{error, info};
 use minimq::{Buffers, ConfigBuilder, Publication, Session};
@@ -46,7 +47,7 @@ pub struct RxPacket {
     pub src: [u8; 6],
     pub rssi: i8,
     pub len: usize,
-    pub data: [u8; 250], // TODO figure out max data packet len
+    pub data: [u8; 256], // TODO figure out max data packet len
 }
 
 #[embassy_executor::task]
@@ -78,7 +79,7 @@ async fn broadcast_ping(
                 log::warn!("Could not send message {e}");
             }
         }
-        Timer::after_secs(2).await;
+        Timer::after_millis(500).await;
     }
 }
 
@@ -92,10 +93,10 @@ async fn receive_packet(rx: EspNowReceiver<'static>) {
             let src = packet.info.src_address;
 
             let payload = packet.data();
-            let len = payload.len().min(250);
+            let len = payload.len().min(256);
 
             // copy to pass ownership
-            let mut data = [0u8; 250];
+            let mut data = [0u8; 256];
             data[..len].copy_from_slice(&payload[..len]);
 
             let _ = RX_CHANNEL
@@ -108,7 +109,7 @@ async fn receive_packet(rx: EspNowReceiver<'static>) {
                 .await; // yield if channel is full
         }
 
-        Timer::after_millis(500).await;
+        Timer::after_millis(100).await;
     }
 }
 
@@ -121,9 +122,9 @@ async fn process_packet(state: &'static Mutex<CriticalSectionRawMutex, NodeState
 
             let mut node_state = state.lock().await;
             let mac = node_state.mac; // own mac address
-            node_state.add_distance(mac, packet.src, packet.rssi);
+            node_state.update_distance_from_self(mac, packet.src, packet.rssi);
             let _ = data
-                .map(|d| node_state.add_neighbour_measurement(packet.src, d))
+                .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
                 .inspect_err(|e| error!("Failed to update data: {e:?}"));
         }
 
