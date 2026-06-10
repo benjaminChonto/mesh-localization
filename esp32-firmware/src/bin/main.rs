@@ -16,10 +16,11 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::{Level, OutputConfig};
+use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
+use esp32_firmware::screen;
 use esp32_firmware::state::NodeState;
 use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, IP_ADDR, MDS_MAX_SIZE, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
@@ -163,9 +164,15 @@ async fn main(spawner: embassy_executor::Spawner) {
     let esp_now = interfaces.esp_now;
     // esp_now.set_channel(1).unwrap();
 
-    // On board status led
-    let mut led =
-        esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+    let i2c = I2c::new(
+        peripherals.I2C0,
+        I2cConfig::default().with_frequency(esp_hal::time::Rate::from_khz(100)),
+    )
+    .unwrap()
+    .with_sda(peripherals.GPIO8)
+    .with_scl(peripherals.GPIO9);
+    let mut display = screen::init(i2c);
+    screen::render(&mut display);
 
     let state: &'static Mutex<CriticalSectionRawMutex, NodeState> =
         STATE.init(Mutex::new(NodeState::new(mac)));
@@ -205,7 +212,6 @@ async fn main(spawner: embassy_executor::Spawner) {
         });
 
         loop {
-            led.toggle();
             {
                 let node_state = state.lock().await;
                 info!(
