@@ -1,13 +1,14 @@
 use crate::state::MAX_SWARM_SIZE;
 use esp_hal::rng::Rng;
 use heapless::Vec;
+use shared::MdsResult;
 
 // TODO: find highest acceptable value
 const MDS_ITERATIONS: usize = 10;
 
 #[derive(Default)]
 pub struct MDS {
-    X: Vec<Vec<f32, 2>, MAX_SWARM_SIZE>,
+    X: MdsResult,
 }
 
 impl MDS {
@@ -25,10 +26,7 @@ impl MDS {
      * - substract mean from X (doesn't change end result, but keeps the values stable)
      *
      */
-    pub fn compute(
-        &mut self,
-        d: Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
-    ) -> &Vec<Vec<f32, 2>, MAX_SWARM_SIZE> {
+    pub fn compute(&mut self, d: Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>) -> &MdsResult {
         let D = make_symmetric(d);
         let n: usize = D.len();
         if self.X.is_empty() || self.X.len() != n {
@@ -84,7 +82,7 @@ fn make_symmetric(
 fn mat_mul(
     m1: &Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
     m2: &Vec<Vec<f32, 2>, MAX_SWARM_SIZE>,
-) -> Vec<Vec<f32, 2>, MAX_SWARM_SIZE> {
+) -> MdsResult {
     let n = m1.len();
     let mut result = Vec::new();
 
@@ -103,9 +101,9 @@ fn mat_mul(
     result
 }
 
-fn initialize_mds(n: usize) -> Vec<Vec<f32, 2>, MAX_SWARM_SIZE> {
+fn initialize_mds(n: usize) -> MdsResult {
     let rng = Rng::new();
-    let mut X = Vec::<Vec<f32, 2>, MAX_SWARM_SIZE>::new();
+    let mut X = MdsResult::new();
     for _ in 0..n {
         let x = (rng.random() as f32) / (u32::MAX as f32);
         let y = (rng.random() as f32) / (u32::MAX as f32);
@@ -114,7 +112,7 @@ fn initialize_mds(n: usize) -> Vec<Vec<f32, 2>, MAX_SWARM_SIZE> {
     substract_mean(&X)
 }
 
-fn substract_mean(X: &Vec<Vec<f32, 2>, MAX_SWARM_SIZE>) -> Vec<Vec<f32, 2>, MAX_SWARM_SIZE> {
+fn substract_mean(X: &MdsResult) -> MdsResult {
     let n = X.len();
     if n == 0 {
         return Vec::new();
@@ -127,9 +125,7 @@ fn substract_mean(X: &Vec<Vec<f32, 2>, MAX_SWARM_SIZE>) -> Vec<Vec<f32, 2>, MAX_
         .collect()
 }
 
-fn pairwise_distances(
-    X: &Vec<Vec<f32, 2>, MAX_SWARM_SIZE>,
-) -> Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
+fn pairwise_distances(X: &MdsResult) -> Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
     let n = X.len();
     let mut dist = Vec::new();
 

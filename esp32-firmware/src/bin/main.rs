@@ -13,7 +13,7 @@ use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
@@ -21,12 +21,15 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::state::{NodeState, State};
-use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, RX_CHANNEL_SIZE};
+use esp32_firmware::utils::{
+    DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, RX_CHANNEL_SIZE,
+};
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
 use log::{error, info};
 use minimq::{Buffers, ConfigBuilder, Publication, Session};
 use postcard::Error;
+use shared::{PerformanceMetrics, TelemetryMessage};
 use static_cell::StaticCell;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -38,8 +41,11 @@ const _DUMMY_MSG: [u8; 6] = [0u8; 6];
 const BROADCAST: [u8; 6] = [0xff; 6];
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
+static METRICS: StaticCell<Mutex<CriticalSectionRawMutex, PerformanceMetrics>> = StaticCell::new();
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, RX_CHANNEL_SIZE> = Channel::new();
+static MQTT_TX_CHANNEL: Channel<CriticalSectionRawMutex, TelemetryMessage, MQTT_TX_CHANNEL_SIZE> =
+    Channel::new();
 
 // TODO maybe move this struct to somewhere else?
 #[derive(Clone, Copy)]
@@ -59,15 +65,18 @@ async fn net_task(mut runner: embassy_net::Runner<'static, esp_radio::wifi::Inte
 async fn broadcast_ping(
     mut tx: EspNowSender<'static>,
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+    perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
 ) {
     let mut serializer_buff = [0u8; DISTANCE_MAP_MAX_SIZE];
 
     loop {
+        let start = Instant::now();
         let distances = {
             // mac addr-> 6 * 10 * 4
             let node_state = state.lock().await;
             node_state.neighbours.get(&node_state.mac).cloned()
         };
+        let finish = start.elapsed().as_micros();
 
         let msg = postcard::to_slice(&distances.unwrap_or_default(), &mut serializer_buff).unwrap();
 
@@ -79,6 +88,8 @@ async fn broadcast_ping(
                 log::warn!("Could not send message {e}");
             }
         }
+
+        perf.lock().await.broadcast_clone_dist_ns = finish;
         Timer::after_millis(500).await;
     }
 }
@@ -114,18 +125,25 @@ async fn receive_packet(rx: EspNowReceiver<'static>) {
 }
 
 #[embassy_executor::task]
-async fn process_packet(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
+async fn process_packet(
+    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+    perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
+) {
     loop {
         while let Ok(packet) = RX_CHANNEL.try_receive() {
             let data: Result<HashMap<[u8; 6], State>, Error> =
                 postcard::from_bytes(&packet.data[..packet.len]);
 
             let mut node_state = state.lock().await;
+            let start = Instant::now();
             let mac = node_state.mac; // own mac address
             node_state.update_distance_from_self(mac, packet.src, packet.rssi);
             let _ = data
                 .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
                 .inspect_err(|e| error!("Failed to update data: {e:?}"));
+            let finish = start.elapsed().as_micros();
+            drop(node_state); // explicit drop, no need to wait to update performance metrics
+            perf.lock().await.process_packet_ns = finish;
         }
 
         // TODO this is random timing, might want to mess with it
@@ -136,7 +154,10 @@ async fn process_packet(state: &'static Mutex<CriticalSectionRawMutex, NodeState
 }
 
 #[embassy_executor::task]
-async fn calculate_state(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
+async fn calculate_state(
+    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+    perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
+) {
     let mut mds = MDS::default();
     loop {
         let neighbour_dist = { state.lock().await.neighbour_matrix() };
@@ -148,11 +169,30 @@ async fn calculate_state(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
             Timer::after_millis(5000).await;
             continue;
         }
+        let start = Instant::now();
         let mds = mds.compute(neighbour_dist);
+        let finish = start.elapsed().as_micros();
         {
-            state.lock().await.mds = mds.clone();
+            state.lock().await.mds = mds.clone(); // TODO the clone might be expensive
+            perf.lock().await.calculate_state_ns = finish;
         }
         Timer::after_millis(5000).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn publish_state(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
+    loop {
+        MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(state.lock().await.mds.clone()));
+        Timer::after_millis(1000).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn publish_metrics(perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>) {
+    loop {
+        MQTT_TX_CHANNEL.try_send(TelemetryMessage::Perf(perf.lock().await.clone()));
+        Timer::after_millis(50).await;
     }
 }
 
@@ -187,7 +227,10 @@ async fn main(spawner: embassy_executor::Spawner) {
         ))
         .unwrap();
     info!("Connecting to '{WIFI_SSID}'…");
-    wifi_controller.connect_async().await.unwrap();
+    while let Err(e) = wifi_controller.connect_async().await {
+        error!("WiFi connect failed ({e:?}), retrying in 5s…");
+        Timer::after(Duration::from_secs(5)).await;
+    }
     info!("Associated with '{WIFI_SSID}'");
 
     let (stack, runner) = embassy_net::new(
@@ -208,20 +251,24 @@ async fn main(spawner: embassy_executor::Spawner) {
     let state: &'static Mutex<CriticalSectionRawMutex, NodeState> =
         STATE.init(Mutex::new(NodeState::new(mac)));
 
+    let perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics> =
+        METRICS.init(Mutex::new(PerformanceMetrics::new()));
+
     let (_, tx, rx) = esp_now.split();
 
     // Spawn tasks
-    spawner.spawn(broadcast_ping(tx, state).unwrap());
+    spawner.spawn(broadcast_ping(tx, state, perf).unwrap());
     spawner.spawn(receive_packet(rx).unwrap());
-    spawner.spawn(process_packet(state).unwrap());
-    spawner.spawn(calculate_state(state).unwrap());
+    spawner.spawn(process_packet(state, perf).unwrap());
+    spawner.spawn(calculate_state(state, perf).unwrap());
+    spawner.spawn(publish_metrics(perf).unwrap());
+    spawner.spawn(publish_state(state).unwrap());
 
-    if ID == "1" {
-        spawner.spawn(calculate_state(state).unwrap());
-    }
-
+    let topic = alloc::format!("telemetry/{ID}");
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];
     loop {
+        // TODO why do we have this extra outer loop? why do we need to open a new mqtt session
+        // every time?
         // MQTT Setup
         let mut rx_mqtt = [0u8; 256];
         let mut tx_mqtt = [0u8; 1024];
@@ -249,18 +296,24 @@ async fn main(spawner: embassy_executor::Spawner) {
 
         loop {
             led.toggle();
-            {
-                let node_state = state.lock().await;
-                info!(
-                    "neighbours:\n{:?}\nmds:\n{:?}",
-                    node_state.neighbour_matrix(),
-                    node_state.mds
-                );
-                let msg: &[u8] = match postcard::to_slice(&node_state.mds, &mut serializer_buff) {
+            // log some info
+            let node_state = state.lock().await;
+            info!(
+                "neighbours:\n{:?}\nmds:\n{:?}",
+                node_state.neighbour_matrix(),
+                node_state.mds
+            );
+            // drain message to server queue
+            while let Ok(telmsg) = MQTT_TX_CHANNEL.try_receive() {
+                let msg: &[u8] = match postcard::to_slice(&telmsg, &mut serializer_buff) {
                     Ok(rs) => rs,
                     Err(_) => &[], // todo consider creating error codes and publishing to mq
                 };
-                match mqtt_session.publish(Publication::new("mds", msg)).await {
+                // TODO consider having different channels for different types of messages
+                match mqtt_session
+                    .publish(Publication::new(topic.as_str(), msg))
+                    .await
+                {
                     Ok(_) => {}
                     Err(minimq::PubError::Session(e)) => {
                         error!("Connection failed, reconnecting ... {e}");
@@ -272,7 +325,8 @@ async fn main(spawner: embassy_executor::Spawner) {
                 }
             }
 
-            Timer::after(Duration::from_millis(3000)).await;
+            Timer::after(Duration::from_millis(50)).await; // made this much faster for
+            // benchmarking
         }
     }
 }

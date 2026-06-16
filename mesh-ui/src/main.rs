@@ -1,32 +1,146 @@
 use std::{
+    collections::{HashMap, VecDeque},
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     thread,
     time::Duration,
 };
 
 use ratatui::{
-    DefaultTerminal, Frame, layout::{Constraint, Direction, Layout}, style::{Color, Style, Stylize}, symbols::Marker, widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph}
+    DefaultTerminal, Frame,
+    layout::{Constraint, Layout},
+    style::{Color, Style, Stylize},
+    symbols::Marker,
+    widgets::{Axis, Block, Chart, Dataset, GraphType, Paragraph, Row, Table},
 };
 use rumqttc::{Client, Event, Incoming, MqttOptions, QoS};
+use shared::{MdsResult, PerformanceMetrics, TelemetryMessage};
 
-fn read_mqtt(tx: &Sender<(String, heapless::Vec<heapless::Vec<f32, 2>, 10>)>) {
+const MOVING_AVG_WINDOW: usize = 20;
+
+struct MovingAvg {
+    buf: VecDeque<u64>,
+}
+
+impl MovingAvg {
+    fn new() -> Self {
+        Self {
+            buf: VecDeque::new(),
+        }
+    }
+
+    fn push(&mut self, value: u64) {
+        if self.buf.len() >= MOVING_AVG_WINDOW {
+            self.buf.pop_front();
+        }
+        self.buf.push_back(value);
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn avg(&self) -> f64 {
+        if self.buf.is_empty() {
+            return 0.0;
+        }
+        self.buf.iter().sum::<u64>() as f64 / self.buf.len() as f64
+    }
+}
+
+struct NodePerfState {
+    latest: PerformanceMetrics,
+    broadcast_avg: MovingAvg,
+    process_avg: MovingAvg,
+    calculate_avg: MovingAvg,
+}
+
+impl NodePerfState {
+    fn new(metrics: PerformanceMetrics) -> Self {
+        let mut state = Self {
+            latest: metrics,
+            broadcast_avg: MovingAvg::new(),
+            process_avg: MovingAvg::new(),
+            calculate_avg: MovingAvg::new(),
+        };
+        state.update(metrics);
+        state
+    }
+
+    fn update(&mut self, metrics: PerformanceMetrics) {
+        self.latest = metrics;
+        self.broadcast_avg.push(metrics.broadcast_clone_dist_ns);
+        self.process_avg.push(metrics.process_packet_ns);
+        self.calculate_avg.push(metrics.calculate_state_ns);
+    }
+}
+
+enum UiEvent {
+    Positions(MdsResult),
+    Perf {
+        node_id: String,
+        metrics: PerformanceMetrics,
+    },
+    Error(String),
+}
+
+struct AppState {
+    positions: Option<MdsResult>,
+    perf_nodes: HashMap<String, NodePerfState>,
+    status: String,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self {
+            positions: None,
+            perf_nodes: HashMap::new(),
+            status: "Waiting for data...".to_string(),
+        }
+    }
+
+    fn handle(&mut self, event: UiEvent) {
+        match event {
+            UiEvent::Positions(pos) => {
+                self.positions = Some(pos);
+            }
+            UiEvent::Perf { node_id, metrics } => {
+                self.perf_nodes
+                    .entry(node_id)
+                    .and_modify(|s| s.update(metrics))
+                    .or_insert_with(|| NodePerfState::new(metrics));
+            }
+            UiEvent::Error(msg) => {
+                self.status = msg;
+            }
+        }
+    }
+}
+
+fn read_mqtt(tx: &Sender<UiEvent>) {
     let mqtt_opt = MqttOptions::new("mesh-ui", "localhost", 1883);
     let (client, mut connection) = Client::new(mqtt_opt, 10);
-    let _ = client
-        .subscribe("mds", QoS::AtLeastOnce)
-        .inspect_err(|e| eprintln!("Could not subscribe to topic: {e}"));
+    if let Err(e) = client.subscribe("telemetry/+", QoS::AtLeastOnce) {
+        eprintln!("Could not subscribe: {e}");
+    }
 
     for event in connection.iter() {
         match event {
             Ok(Event::Incoming(Incoming::Publish(packet))) => {
-                let data: heapless::Vec<heapless::Vec<f32, 2>, 10> =
-                    postcard::from_bytes(&packet.payload).unwrap();
-                // let payload = String::from_utf8_lossy(&packet.payload);
-                let _ = tx.send((String::new(), data));
+                let node_id = packet.topic.split('/').nth(1).unwrap_or("?").to_string();
+                match postcard::from_bytes::<TelemetryMessage<'_>>(packet.payload.as_ref()) {
+                    Ok(TelemetryMessage::Mds(positions)) if node_id == "0" => {
+                        let _ = tx.send(UiEvent::Positions(positions));
+                    }
+                    Ok(TelemetryMessage::Mds(_)) => {}
+                    Ok(TelemetryMessage::Perf(metrics)) => {
+                        let _ = tx.send(UiEvent::Perf { node_id, metrics });
+                    }
+                    Ok(TelemetryMessage::Log { .. }) => {}
+                    Err(e) => {
+                        let _ = tx.send(UiEvent::Error(format!("Decode error: {e}")));
+                    }
+                }
             }
             Ok(_) => {}
             Err(e) => {
-                let _ = tx.send((format!("MQTT error: {e}"), heapless::Vec::new()));
+                let _ = tx.send(UiEvent::Error(format!("MQTT error: {e}")));
                 break;
             }
         }
@@ -43,21 +157,17 @@ fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
-fn app(terminal: &mut DefaultTerminal, rx: &Receiver<(String, heapless::Vec<heapless::Vec<f32, 2>, 10>)>) -> std::io::Result<()> {
-    let mut data: Option<(String, heapless::Vec<heapless::Vec<f32, 2>, 10>)>;
+fn app(terminal: &mut DefaultTerminal, rx: &Receiver<UiEvent>) -> std::io::Result<()> {
+    let mut state = AppState::new();
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(msg) => {
-                data = Some(msg);
-                terminal.draw(|frame| render_split(frame, data.as_ref()))?;
-            }
+            Ok(event) => state.handle(event),
             Err(RecvTimeoutError::Timeout) => {}
-            Err(e) => {
-                data = Some((format!("MPSC error: {e}"), heapless::Vec::new()));
-                terminal.draw(|frame| render_split(frame, data.as_ref()))?;
-            }
+            Err(e) => state.status = format!("MPSC error: {e}"),
         }
+
+        terminal.draw(|frame| render(frame, &state))?;
 
         if crossterm::event::poll(Duration::from_millis(0))?
             && crossterm::event::read()?.is_key_press()
@@ -67,48 +177,35 @@ fn app(terminal: &mut DefaultTerminal, rx: &Receiver<(String, heapless::Vec<heap
     }
 }
 
-fn render_split(
-    frame: &mut Frame,
-    logs: Option<&(String, heapless::Vec<heapless::Vec<f32, 2>, 10>)>,
-) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(frame.area());
+fn render(frame: &mut Frame, state: &AppState) {
+    let [chart_area, bottom_area] =
+        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .areas(frame.area());
 
-    if let Some(logs) = logs {
-        render_chart(frame, logs, chunks[0]);
-    }
-    render_messages(frame, logs, chunks[1]);
+    let [perf_area, status_area] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .areas(bottom_area);
+
+    render_chart(frame, state.positions.as_ref(), chart_area);
+    render_perf(frame, &state.perf_nodes, perf_area);
+    render_status(frame, &state.status, status_area);
 }
 
-fn render_messages(
-    frame: &mut Frame,
-    logs: Option<&(String, heapless::Vec<heapless::Vec<f32, 2>, 10>)>,
-    area: ratatui::layout::Rect,
-) {
-    let message = match logs {
-        Some((text, _)) if !text.trim().is_empty() => text.clone(),
-        _ => "No MQTT message received yet.".to_string(),
+fn render_chart(frame: &mut Frame, positions: Option<&MdsResult>, area: ratatui::layout::Rect) {
+    let Some(positions) = positions else {
+        frame.render_widget(
+            Paragraph::new("Waiting for MDS data...")
+                .block(Block::bordered().title("Node positions")),
+            area,
+        );
+        return;
     };
 
-    let paragraph = Paragraph::new(message)
-        .block(Block::new().title("MQTT message").borders(Borders::ALL));
-
-    frame.render_widget(paragraph, area);
-}
-
-fn render_chart(
-    frame: &mut Frame,
-    logs: &(String, heapless::Vec<heapless::Vec<f32, 2>, 10>),
-    area: ratatui::layout::Rect,
-) {
-    let data: Vec<(f64, f64)> = logs
-        .1
+    let data: Vec<(f64, f64)> = positions
         .iter()
         .filter_map(|p| {
             if p.len() == 2 {
-                Some((p[0] as f64, p[1] as f64))
+                Some((f64::from(p[0]), f64::from(p[1])))
             } else {
                 None
             }
@@ -116,16 +213,23 @@ fn render_chart(
         .collect();
 
     if data.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No position data").block(Block::bordered().title("Node positions")),
+            area,
+        );
         return;
     }
 
-    let x_bounds = data.iter().fold([f64::INFINITY, f64::NEG_INFINITY], |acc, p| {
-        [acc[0].min(p.0) - 10f64, acc[1].max(p.0) + 3f64]
-    });
-
-    let y_bounds = data.iter().fold([f64::INFINITY, f64::NEG_INFINITY], |acc, p| {
-        [acc[0].min(p.1) - 10f64, acc[1].max(p.1) +3f64]
-    });
+    let x_bounds = data
+        .iter()
+        .fold([f64::INFINITY, f64::NEG_INFINITY], |[lo, hi], p| {
+            [lo.min(p.0) - 10.0, hi.max(p.0) + 3.0]
+        });
+    let y_bounds = data
+        .iter()
+        .fold([f64::INFINITY, f64::NEG_INFINITY], |[lo, hi], p| {
+            [lo.min(p.1) - 10.0, hi.max(p.1) + 3.0]
+        });
 
     let dataset = Dataset::default()
         .name("MDS")
@@ -134,17 +238,67 @@ fn render_chart(
         .style(Style::new().bg(Color::LightBlue))
         .data(&data);
 
-    let x_axis = Axis::default()
-        .title("X".blue())
-        .bounds(x_bounds);
-
-    let y_axis = Axis::default()
-        .title("Y".blue())
-        .bounds(y_bounds);
-
     let chart = Chart::new(vec![dataset])
-        .x_axis(x_axis)
-        .y_axis(y_axis);
+        .block(Block::bordered().title("Node positions"))
+        .x_axis(Axis::default().title("X".blue()).bounds(x_bounds))
+        .y_axis(Axis::default().title("Y".blue()).bounds(y_bounds));
 
     frame.render_widget(chart, area);
+}
+
+fn time_display(current: u64, avg: f64) -> String {
+    format!("{current}micros / {avg:.0}micros")
+}
+
+fn render_perf(
+    frame: &mut Frame,
+    nodes: &HashMap<String, NodePerfState>,
+    area: ratatui::layout::Rect,
+) {
+    let block = Block::bordered().title("Performance (cur / 20-sample avg)");
+
+    if nodes.is_empty() {
+        frame.render_widget(Paragraph::new("No nodes yet").block(block), area);
+        return;
+    }
+
+    let mut node_ids: Vec<&str> = nodes.keys().map(String::as_str).collect();
+    node_ids.sort_unstable();
+
+    let header = Row::new([
+        "Node",
+        "broadcast_clone",
+        "process_packet",
+        "calculate_state",
+    ])
+    .style(Style::new().bold());
+
+    let rows: Vec<Row> = node_ids
+        .iter()
+        .map(|id| {
+            let s = &nodes[*id];
+            Row::new([
+                (*id).to_string(),
+                time_display(s.latest.broadcast_clone_dist_ns, s.broadcast_avg.avg()),
+                time_display(s.latest.process_packet_ns, s.process_avg.avg()),
+                time_display(s.latest.calculate_state_ns, s.calculate_avg.avg()),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(6),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+    ];
+
+    frame.render_widget(Table::new(rows, widths).header(header).block(block), area);
+}
+
+fn render_status(frame: &mut Frame, status: &str, area: ratatui::layout::Rect) {
+    frame.render_widget(
+        Paragraph::new(status.to_owned()).block(Block::bordered().title("Status")),
+        area,
+    );
 }

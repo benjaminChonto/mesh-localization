@@ -8,3 +8,4 @@ pub const MDS_MAX_SIZE: usize = 128;
 // (6+4) * 10 + type info = 101
 pub const DISTANCE_MAP_MAX_SIZE: usize = 128;
 pub const RX_CHANNEL_SIZE: usize = 256;
+pub const MQTT_TX_CHANNEL_SIZE: usize = 256;
