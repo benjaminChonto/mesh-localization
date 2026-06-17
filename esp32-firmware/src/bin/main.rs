@@ -241,7 +241,7 @@ async fn main(spawner: embassy_executor::Spawner) {
             }
 
             screen::render_mds(&mut terminal, &macs, &distances, &mds, &id);
-            Timer::after(Duration::from_millis(3000)).await;
+            Timer::after(Duration::from_millis(1000)).await;
         }
     }
 }

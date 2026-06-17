@@ -113,6 +113,7 @@ fn draw_mds(
     let x_pad = x_abs_max * 0.15 + 0.01;
     let y_pad = y_abs_max * 0.15 + 0.01;
 
+    // canvas widget
     let canvas = Canvas::default()
         .block(Block::bordered().title("MDS"))
         .marker(Marker::Dot)
@@ -126,7 +127,17 @@ fn draw_mds(
             for (i, &(x, y)) in coords.iter().enumerate() {
                 ctx.print(x, y, format!("{i}"));
             }
+            for (i, &(x, y)) in coords.iter().enumerate() {
+                let line = if (x, y) == (0.0, 0.0) {
+                    continue;
+                } else {
+                    format!("{:.2}m", distances[current_node_index][i])
+                };
+                ctx.print(x, y - 0.02, line);
+            }
         });
+
+    // mds widget
     let mds_area = frame.area();
     let mds_height = mds_area.height - 1; // leave space for info
     let mds_area = ratatui::layout::Rect {
@@ -136,11 +147,7 @@ fn draw_mds(
         height: mds_height,
     };
 
-    let paragraph = Paragraph::new(format!(
-        "Nodes: {}\nDistances: {}",
-        macs.len(),
-        distances.len()
-    ));
+    let paragraph = Paragraph::new(format!("Nodes: {}", macs.len()));
     let info_area = frame.area();
     let info_height = 1;
     let info_area = ratatui::layout::Rect {
