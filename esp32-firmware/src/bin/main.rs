@@ -21,7 +21,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::screen;
-use esp32_firmware::state::NodeState;
+use esp32_firmware::state::{Helper, NodeState};
 use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, IP_ADDR, MDS_MAX_SIZE, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
 use log::{error, info};
@@ -209,31 +209,38 @@ async fn main(spawner: embassy_executor::Spawner) {
         });
 
         loop {
-            let mds = {
+            let (mds, macs, distances, id) = {
                 let node_state = state.lock().await;
                 info!(
                     "neighbours:\n{:?}\nmds:\n{:?}",
                     node_state.neighbour_matrix(),
                     node_state.mds
                 );
-                let msg: &[u8] = match postcard::to_slice(&node_state.mds, &mut serializer_buff) {
-                    Ok(rs) => rs,
-                    Err(_) => &[], // todo consider creating error codes and publishing to mq
-                };
-                match mqtt_session.publish(Publication::new("mds", msg)).await {
-                    Ok(_) => {}
-                    Err(minimq::PubError::Session(e)) => {
-                        error!("Connection failed, reconnecting ... {e}");
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Payload serialization error: {e}");
-                    }
-                }
-                node_state.mds.clone()
+                (
+                    node_state.mds.clone(),
+                    node_state.get_ordered_mac_addresses(),
+                    node_state.get_ordered_distances(),
+                    node_state.mac,
+                )
             };
 
-            screen::render_mds(&mut terminal, &mds);
+            let msg: &[u8] = match postcard::to_slice(&mds, &mut serializer_buff) {
+                Ok(rs) => rs,
+                Err(_) => &[],
+            };
+
+            match mqtt_session.publish(Publication::new("mds", msg)).await {
+                Ok(_) => {}
+                Err(minimq::PubError::Session(e)) => {
+                    error!("Connection failed, reconnecting ... {e}");
+                    break;
+                }
+                Err(e) => {
+                    error!("Payload serialization error: {e}");
+                }
+            }
+
+            screen::render_mds(&mut terminal, &macs, &distances, &mds, &id);
             Timer::after(Duration::from_millis(3000)).await;
         }
     }

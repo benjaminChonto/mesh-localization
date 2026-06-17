@@ -67,3 +67,42 @@ impl NodeState {
         matrix
     }
 }
+
+pub trait Helper {
+    fn get_ordered_mac_addresses(&self) -> Vec<[u8; 6], MAX_SWARM_SIZE>;
+    fn get_ordered_distances(&self) -> Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>;
+}
+
+impl Helper for NodeState {
+    fn get_ordered_mac_addresses(&self) -> Vec<[u8; 6], MAX_SWARM_SIZE> {
+        let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
+        self.neighbours.keys().for_each(|&node| {
+            let _ = vec.push(node);
+        });
+        // Mac addresses are unique, so this is fine (more performant then regular sort)
+        vec.sort_unstable();
+        vec
+    }
+
+    fn get_ordered_distances(&self) -> Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
+        let mac_addresses = self.get_ordered_mac_addresses();
+        let matrix: Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> = mac_addresses
+            .iter()
+            .map(|node| {
+                let neighbours = &self.neighbours[node];
+                mac_addresses
+                    .iter()
+                    .map(|n| {
+                        *neighbours.get(n).unwrap_or_else(|| {
+                            if node == n {
+                                return &0.0;
+                            }
+                            &f32::INFINITY
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        matrix
+    }
+}
