@@ -29,7 +29,7 @@ use hashbrown::HashMap;
 use log::{error, info};
 use minimq::{Buffers, ConfigBuilder, Publication, Session};
 use postcard::Error;
-use shared::{PerformanceMetrics, TelemetryMessage};
+use shared::{I16F16, PerformanceMetrics, TelemetryMessage};
 use static_cell::StaticCell;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -71,14 +71,22 @@ async fn broadcast_ping(
 
     loop {
         let start = Instant::now();
-        let distances = {
-            // mac addr-> 6 * 10 * 4
-            let node_state = state.lock().await;
-            node_state.neighbours.get(&node_state.mac).cloned()
-        };
+        let mut distances: Option<HashMap<[u8; 6], State>> = None;
+        {
+            distances = {
+                // mac addr-> 6 * 10 * 4
+                let node_state = state.lock().await;
+                node_state.neighbours.get(&node_state.mac).cloned()
+            };
+        }
         let finish = start.elapsed().as_micros();
 
-        let msg = postcard::to_slice(&distances.unwrap_or_default(), &mut serializer_buff).unwrap();
+        let Ok(msg) = postcard::to_slice(&distances.unwrap_or_default(), &mut serializer_buff)
+        else {
+            log::warn!("broadcast_ping: serializer buffer too small, skipping");
+            Timer::after_millis(500).await;
+            continue;
+        };
 
         match tx.send(&BROADCAST, msg) {
             Ok(waiter) => {
@@ -88,8 +96,9 @@ async fn broadcast_ping(
                 log::warn!("Could not send message {e}");
             }
         }
-
-        perf.lock().await.broadcast_clone_dist_ns = finish;
+        {
+            perf.lock().await.broadcast_clone_dist_ns = finish;
+        }
         Timer::after_millis(500).await;
     }
 }
@@ -134,16 +143,19 @@ async fn process_packet(
             let data: Result<HashMap<[u8; 6], State>, Error> =
                 postcard::from_bytes(&packet.data[..packet.len]);
 
-            let mut node_state = state.lock().await;
             let start = Instant::now();
-            let mac = node_state.mac; // own mac address
-            node_state.update_distance_from_self(mac, packet.src, packet.rssi);
-            let _ = data
-                .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
-                .inspect_err(|e| error!("Failed to update data: {e:?}"));
+            {
+                let mut node_state = state.lock().await;
+                let mac = node_state.mac; // own mac address
+                node_state.update_distance_from_self(mac, packet.src, packet.rssi);
+                let _ = data
+                    .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
+                    .inspect_err(|e| error!("Failed to update data: {e:?}"));
+            }
             let finish = start.elapsed().as_micros();
-            drop(node_state); // explicit drop, no need to wait to update performance metrics
-            perf.lock().await.process_packet_ns = finish;
+            {
+                perf.lock().await.process_packet_ns = finish;
+            }
         }
 
         // TODO this is random timing, might want to mess with it
@@ -161,10 +173,7 @@ async fn calculate_state(
     let mut mds = MDS::default();
     loop {
         let neighbour_dist = { state.lock().await.neighbour_matrix() };
-        if neighbour_dist
-            .iter()
-            .any(|row| row.contains(&f32::INFINITY))
-        {
+        if neighbour_dist.iter().any(|row| row.contains(&I16F16::MAX)) {
             // Neighbour matrix is incomplete
             Timer::after_millis(5000).await;
             continue;
@@ -176,7 +185,7 @@ async fn calculate_state(
             state.lock().await.mds = mds.clone(); // TODO the clone might be expensive
             perf.lock().await.calculate_state_ns = finish;
         }
-        Timer::after_millis(5000).await;
+        Timer::after_millis(500).await;
     }
 }
 
@@ -184,7 +193,7 @@ async fn calculate_state(
 async fn publish_state(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
     loop {
         MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(state.lock().await.mds.clone()));
-        Timer::after_millis(1000).await;
+        Timer::after_millis(500).await;
     }
 }
 
@@ -296,13 +305,15 @@ async fn main(spawner: embassy_executor::Spawner) {
 
         loop {
             led.toggle();
-            // log some info
-            let node_state = state.lock().await;
-            info!(
-                "neighbours:\n{:?}\nmds:\n{:?}",
-                node_state.neighbour_matrix(),
-                node_state.mds
-            );
+            {
+                // log some info
+                let node_state = state.lock().await;
+                info!(
+                    "neighbours:\n{:?}\nmds:\n{:?}",
+                    node_state.neighbour_matrix(),
+                    node_state.mds
+                );
+            }
             // drain message to server queue
             while let Ok(telmsg) = MQTT_TX_CHANNEL.try_receive() {
                 let msg: &[u8] = match postcard::to_slice(&telmsg, &mut serializer_buff) {
@@ -325,7 +336,7 @@ async fn main(spawner: embassy_executor::Spawner) {
                 }
             }
 
-            Timer::after(Duration::from_millis(50)).await; // made this much faster for
+            Timer::after(Duration::from_millis(500)).await; // made this much faster for
             // benchmarking
         }
     }

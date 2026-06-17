@@ -205,7 +205,10 @@ fn render_chart(frame: &mut Frame, positions: Option<&MdsResult>, area: ratatui:
         .iter()
         .filter_map(|p| {
             if p.len() == 2 {
-                Some((f64::from(p[0]), f64::from(p[1])))
+                // I16F16 raw bits / 65536 gives the float value without needing the fixed crate
+                let x = p[0].to_bits() as f64 / 65536.0;
+                let y = p[1].to_bits() as f64 / 65536.0;
+                Some((x, y))
             } else {
                 None
             }

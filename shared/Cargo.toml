@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+fixed = { version = "1", features = ["serde"] }
 serde = { version = "1.0", default-features = false, features = [
   "derive",
   "alloc",

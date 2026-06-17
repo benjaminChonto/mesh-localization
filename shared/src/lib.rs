@@ -1,9 +1,10 @@
 #![no_std]
+pub use fixed::types::I16F16;
 use heapless::Vec;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_SWARM_SIZE: usize = 10;
-pub type MdsResult = Vec<Vec<f32, 2>, MAX_SWARM_SIZE>;
+pub type MdsResult = Vec<Vec<I16F16, 2>, MAX_SWARM_SIZE>;
 
 #[derive(Serialize, Deserialize)]
 pub enum TelemetryMessage<'a> {
