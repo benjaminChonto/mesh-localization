@@ -3,11 +3,11 @@
  */
 pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
     Some(v) => v,
-    None => "bcsonto_network",
+    None => "AIVD Deurbel 42"
 };
 pub const WIFI_PASS: &str = match option_env!("WIFI_PASS") {
     Some(v) => v,
-    None => "Charlie123",
+    None => "RoombaRobinCasaHouse666",
 };
 pub const IP_ADDR: &str = match option_env!("IP_ADDR") {
     Some(v) => v,

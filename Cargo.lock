@@ -812,15 +812,38 @@ dependencies = [
 
 [[package]]
 name = "embedded-graphics"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "750082c65094fbcc4baf9ba31583ce9a8bb7f52cadfb96f6164b1bc7f922f32b"
+dependencies = [
+ "az",
+ "byteorder",
+ "embedded-graphics-core 0.3.3",
+ "float-cmp 0.8.0",
+ "micromath 1.1.1",
+]
+
+[[package]]
+name = "embedded-graphics"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e8da660bb0c829b34a56a965490597f82a55e767b91f9543be80ce8ccb416fe"
 dependencies = [
  "az",
  "byteorder",
- "embedded-graphics-core",
- "float-cmp",
- "micromath",
+ "embedded-graphics-core 0.4.1",
+ "float-cmp 0.9.0",
+ "micromath 2.1.0",
+]
+
+[[package]]
+name = "embedded-graphics-core"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8b1239db5f3eeb7e33e35bd10bd014e7b2537b17e071f726a09351431337cfa"
+dependencies = [
+ "az",
+ "byteorder",
 ]
 
 [[package]]
@@ -831,15 +854,6 @@ checksum = "95743bef3ff70fcba3930246c4e6872882bbea0dcc6da2ca860112e0cd4bd09f"
 dependencies = [
  "az",
  "byteorder",
-]
-
-[[package]]
-name = "embedded-graphics-unicodefonts"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a82ef1580d1bff3e89bd3e68069acb24910b66001aaab1738ce9de8d03d2ab1e"
-dependencies = [
- "embedded-graphics",
 ]
 
 [[package]]
@@ -1266,11 +1280,12 @@ name = "esp32-firmware"
 version = "0.1.0"
 dependencies = [
  "critical-section",
+ "display-interface",
  "embassy-executor",
  "embassy-net",
  "embassy-sync 0.8.0",
  "embassy-time",
- "embedded-graphics",
+ "embedded-graphics 0.8.2",
  "embedded-hal 1.0.0",
  "embedded-io-async 0.7.0",
  "esp-alloc",
@@ -1282,6 +1297,7 @@ dependencies = [
  "esp-rtos",
  "hashbrown 0.17.1",
  "heapless 0.9.3",
+ "ibm437",
  "libm",
  "log",
  "minimq",
@@ -1410,6 +1426,15 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
+name = "float-cmp"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1267f4ac4f343772758f7b1bdcbe767c218bbab93bb432acbf5162bbf85a6c4"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "float-cmp"
@@ -1665,6 +1690,15 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "ibm437"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f2fb08348a61f2e5b77027a9f9740d4b0f0260d2654f651195490d061dd1f12"
+dependencies = [
+ "embedded-graphics 0.7.1",
+]
 
 [[package]]
 name = "id-arena"
@@ -1958,6 +1992,12 @@ dependencies = [
 
 [[package]]
 name = "micromath"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc4010833aea396656c2f91ee704d51a6f1329ec2ab56ffd00bfd56f7481ea94"
+
+[[package]]
+name = "micromath"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
@@ -2009,8 +2049,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e822a3202a142d1fb7e32c6dfbd0e158cd8b6b326f6b5a3d1a9cdb671f73ff2"
 dependencies = [
- "embedded-graphics",
- "embedded-graphics-unicodefonts",
+ "embedded-graphics 0.8.2",
  "ratatui-core",
  "thiserror 2.0.18",
 ]
@@ -3023,7 +3062,7 @@ dependencies = [
  "display-interface",
  "display-interface-i2c",
  "display-interface-spi",
- "embedded-graphics-core",
+ "embedded-graphics-core 0.4.1",
  "embedded-hal 1.0.0",
  "maybe-async-cfg",
 ]

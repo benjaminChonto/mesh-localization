@@ -162,17 +162,14 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(net_task(runner).unwrap());
     stack.wait_config_up().await;
     let esp_now = interfaces.esp_now;
-    // esp_now.set_channel(1).unwrap();
 
-    let i2c = I2c::new(
-        peripherals.I2C0,
-        I2cConfig::default().with_frequency(esp_hal::time::Rate::from_khz(100)),
-    )
-    .unwrap()
-    .with_sda(peripherals.GPIO8)
-    .with_scl(peripherals.GPIO9);
-    let mut display = screen::init(i2c);
-    screen::render(&mut display);
+    let i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
+        .unwrap()
+        .with_sda(peripherals.GPIO0)
+        .with_scl(peripherals.GPIO1);
+    Timer::after_millis(100).await;
+    let mut display = screen::init(i2c).expect("SSD1306 init failed");
+    let mut terminal = screen::init_terminal(&mut display).expect("Terminal init failed");
 
     let state: &'static Mutex<CriticalSectionRawMutex, NodeState> =
         STATE.init(Mutex::new(NodeState::new(mac)));
@@ -212,7 +209,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         });
 
         loop {
-            {
+            let mds = {
                 let node_state = state.lock().await;
                 info!(
                     "neighbours:\n{:?}\nmds:\n{:?}",
@@ -233,8 +230,10 @@ async fn main(spawner: embassy_executor::Spawner) {
                         error!("Payload serialization error: {e}");
                     }
                 }
-            }
+                node_state.mds.clone()
+            };
 
+            screen::render_mds(&mut terminal, &mds);
             Timer::after(Duration::from_millis(3000)).await;
         }
     }
