@@ -115,7 +115,7 @@ async fn calculate_state(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
         {
             state.lock().await.mds = mds.clone();
         }
-        Timer::after_millis(5000).await;
+        Timer::after_millis(2000).await;
     }
 }
 
@@ -167,9 +167,22 @@ async fn main(spawner: embassy_executor::Spawner) {
         .unwrap()
         .with_sda(peripherals.GPIO0)
         .with_scl(peripherals.GPIO1);
-    Timer::after_millis(100).await;
-    let mut display = screen::init(i2c).expect("SSD1306 init failed");
-    let mut terminal = screen::init_terminal(&mut display).expect("Terminal init failed");
+
+    let mut display = match screen::init(i2c) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            info!("Failed to initialize display: {e:?}");
+            None
+        }
+    };
+
+    let mut terminal = if let Some(ref mut display) = display {
+        info!("Display initialized");
+        screen::init_terminal(display).ok()
+    } else {
+        info!("Running without display");
+        None
+    };
 
     let state: &'static Mutex<CriticalSectionRawMutex, NodeState> =
         STATE.init(Mutex::new(NodeState::new(mac)));
@@ -240,7 +253,10 @@ async fn main(spawner: embassy_executor::Spawner) {
                 }
             }
 
-            screen::render_mds(&mut terminal, &macs, &distances, &mds, &id);
+            if let Some(ref mut terminal) = terminal {
+                screen::render_mds(terminal, &macs, &distances, &mds, &id);
+            }
+
             Timer::after(Duration::from_millis(1000)).await;
         }
     }
