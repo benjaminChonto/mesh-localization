@@ -74,6 +74,11 @@ ssd1306 = "0.10.0"
 display-interface = "0.5"
 embedded-graphics = "0.8"
 embedded-hal = { version = "1.0", default-features = false }
+serde = { version = "1.0", default-features = false, features = [
+  "derive",
+  "alloc",
+] }
+
 
 [profile.dev]
 # Rust debug is too slow.

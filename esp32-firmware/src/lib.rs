@@ -8,3 +8,4 @@ pub mod mds;
 pub mod screen;
 pub mod state;
 pub mod utils;
+pub mod wificonfig;
