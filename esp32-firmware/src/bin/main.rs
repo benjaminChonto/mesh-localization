@@ -9,6 +9,8 @@
 
 extern crate alloc;
 
+use defmt::{error, info, warn};
+use defmt_rtt as _;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
 use embassy_sync::mutex::Mutex;
@@ -26,7 +28,6 @@ use esp32_firmware::utils::{
 };
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
-use log::{error, info};
 use minimq::{Buffers, ConfigBuilder, Publication, Session};
 use postcard::Error;
 use shared::{I16F16, PerformanceMetrics, TelemetryMessage};
@@ -83,7 +84,7 @@ async fn broadcast_ping(
 
         let Ok(msg) = postcard::to_slice(&distances.unwrap_or_default(), &mut serializer_buff)
         else {
-            log::warn!("broadcast_ping: serializer buffer too small, skipping");
+            warn!("broadcast_ping: serializer buffer too small, skipping");
             Timer::after_millis(500).await;
             continue;
         };
@@ -93,7 +94,7 @@ async fn broadcast_ping(
                 let _ = waiter.wait();
             }
             Err(e) => {
-                log::warn!("Could not send message {e}");
+                warn!("Could not send message {:?}", e);
             }
         }
         {
@@ -150,7 +151,7 @@ async fn process_packet(
                 node_state.update_distance_from_self(mac, packet.src, packet.rssi);
                 let _ = data
                     .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
-                    .inspect_err(|e| error!("Failed to update data: {e:?}"));
+                    .inspect_err(|e| error!("Failed to update data: {}", defmt::Debug2Format(&e)));
             }
             let finish = start.elapsed().as_micros();
             {
@@ -192,7 +193,7 @@ async fn calculate_state(
 #[embassy_executor::task]
 async fn publish_state(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
     loop {
-        MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(state.lock().await.mds.clone()));
+        let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(state.lock().await.mds.clone()));
         Timer::after_millis(500).await;
     }
 }
@@ -200,7 +201,7 @@ async fn publish_state(state: &'static Mutex<CriticalSectionRawMutex, NodeState>
 #[embassy_executor::task]
 async fn publish_metrics(perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>) {
     loop {
-        MQTT_TX_CHANNEL.try_send(TelemetryMessage::Perf(perf.lock().await.clone()));
+        let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Perf(perf.lock().await.clone()));
         Timer::after_millis(50).await;
     }
 }
@@ -212,7 +213,6 @@ async fn publish_metrics(perf: &'static Mutex<CriticalSectionRawMutex, Performan
 #[esp_rtos::main]
 async fn main(spawner: embassy_executor::Spawner) {
     esp_alloc::heap_allocator!(size: HEAP_SIZE);
-    esp_println::logger::init_logger_from_env();
 
     // Initialize HAL and RTOS
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
@@ -226,7 +226,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let (mut wifi_controller, interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default()).unwrap();
     let mac = interfaces.station.mac_address();
-    info!("Device MAC address {mac:?}");
+    info!("Device MAC address {:?}", mac);
 
     wifi_controller
         .set_config(&esp_radio::wifi::Config::Station(
@@ -235,12 +235,12 @@ async fn main(spawner: embassy_executor::Spawner) {
                 .with_password(WIFI_PASS.into()),
         ))
         .unwrap();
-    info!("Connecting to '{WIFI_SSID}'…");
+    info!("Connecting to '{}'…", WIFI_SSID);
     while let Err(e) = wifi_controller.connect_async().await {
-        error!("WiFi connect failed ({e:?}), retrying in 5s…");
+        error!("WiFi connect failed ({:?}), retrying in 5s…", e);
         Timer::after(Duration::from_secs(5)).await;
     }
-    info!("Associated with '{WIFI_SSID}'");
+    info!("Associated with '{}'", WIFI_SSID);
 
     let (stack, runner) = embassy_net::new(
         interfaces.station,
@@ -273,6 +273,11 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(publish_metrics(perf).unwrap());
     spawner.spawn(publish_state(state).unwrap());
 
+    // init_rustmeter_beacon(
+    //     RustmeterConfig::new(config.cpu_clock().frequency()),
+    //     &spawner,
+    // );
+    //
     let topic = alloc::format!("telemetry/{ID}");
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];
     loop {
@@ -287,7 +292,7 @@ async fn main(spawner: embassy_executor::Spawner) {
             Session::new(ConfigBuilder::new(Buffers::new(&mut rx_mqtt, &mut tx_mqtt)));
 
         let mut socket = TcpSocket::new(stack, &mut rx_tcp, &mut tx_tcp);
-        info!("Connecting to MQTT server ...",);
+        info!("Connecting to MQTT server ...");
         if let Err(e) = socket
             .connect(IpEndpoint::new(
                 IpAddress::Ipv4(IP_ADDR.parse().unwrap()),
@@ -295,12 +300,12 @@ async fn main(spawner: embassy_executor::Spawner) {
             ))
             .await
         {
-            error!("Failed to connect to mosquitto: {e:?}");
+            error!("Failed to connect to mosquitto: {:?}", e);
         }
 
         // TODO handle properly and check results of connections / publishing
         let _ = mqtt_session.connect(socket).await.inspect_err(|e| {
-            error!("Connection failed: {e:?}");
+            error!("Connection failed: {}", defmt::Debug2Format(&e));
         });
 
         loop {
@@ -309,9 +314,9 @@ async fn main(spawner: embassy_executor::Spawner) {
                 // log some info
                 let node_state = state.lock().await;
                 info!(
-                    "neighbours:\n{:?}\nmds:\n{:?}",
-                    node_state.neighbour_matrix(),
-                    node_state.mds
+                    "neighbours:\n{}\nmds:\n{}",
+                    defmt::Debug2Format(&node_state.neighbour_matrix()),
+                    defmt::Debug2Format(&node_state.mds)
                 );
             }
             // drain message to server queue
@@ -327,11 +332,14 @@ async fn main(spawner: embassy_executor::Spawner) {
                 {
                     Ok(_) => {}
                     Err(minimq::PubError::Session(e)) => {
-                        error!("Connection failed, reconnecting ... {e}");
+                        error!(
+                            "Connection failed, reconnecting ... {}",
+                            defmt::Debug2Format(&e)
+                        );
                         break;
                     }
                     Err(e) => {
-                        error!("Payload serialization error: {e}");
+                        error!("Payload serialization error: {}", defmt::Debug2Format(&e));
                     }
                 }
             }
