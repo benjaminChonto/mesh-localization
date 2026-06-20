@@ -10,7 +10,6 @@
 extern crate alloc;
 
 use defmt::{error, info, warn};
-use defmt_rtt as _;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
 use embassy_sync::mutex::Mutex;
@@ -19,6 +18,7 @@ use embassy_time::{Duration, Instant, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
+use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
@@ -30,6 +30,7 @@ use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
 use minimq::{Buffers, ConfigBuilder, Publication, Session};
 use postcard::Error;
+use rustmeter_beacon::{RustmeterConfig, init_rustmeter_beacon};
 use shared::{I16F16, PerformanceMetrics, TelemetryMessage};
 use static_cell::StaticCell;
 
@@ -180,7 +181,9 @@ async fn calculate_state(
             continue;
         }
         let start = Instant::now();
-        let mds = mds.compute(neighbour_dist);
+        // compute() is async and already instrumented via #[monitor_fn] on MDS::compute,
+        // so we await it directly (monitor_scoped! cannot wrap async code).
+        let mds = mds.compute(neighbour_dist).await;
         let finish = start.elapsed().as_micros();
         {
             state.lock().await.mds = mds.clone(); // TODO the clone might be expensive
@@ -242,6 +245,13 @@ async fn main(spawner: embassy_executor::Spawner) {
     }
     info!("Associated with '{}'", WIFI_SSID);
 
+    // spawn rustmeter beacon on the normal thread executor
+    init_rustmeter_beacon(
+        RustmeterConfig::new(Rate::from_mhz(160)).with_serial_jtag_printer(),
+        &spawner,
+    )
+    .unwrap();
+
     let (stack, runner) = embassy_net::new(
         interfaces.station,
         Config::dhcpv4(Default::default()),
@@ -273,11 +283,6 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(publish_metrics(perf).unwrap());
     spawner.spawn(publish_state(state).unwrap());
 
-    // init_rustmeter_beacon(
-    //     RustmeterConfig::new(config.cpu_clock().frequency()),
-    //     &spawner,
-    // );
-    //
     let topic = alloc::format!("telemetry/{ID}");
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];
     loop {

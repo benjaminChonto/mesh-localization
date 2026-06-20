@@ -1,8 +1,6 @@
 [target.riscv32imc-unknown-none-elf]
-# defmt-rtt logs are read over RTT via probe-rs (espflash --monitor cannot decode RTT).
-# --log-format omits the "└─ file:line" location line (which shows <invalid location>
-# for defmt::Debug2Format frames since they carry no call-site metadata).
-runner = ["probe-rs", "run", "--chip", "esp32c3", "--log-format", "{t} [{L}] {s}"]
+runner = "rustmeter run --chip esp32c3"
+
 # Firmware-only flags (not applied to the host-target mesh-ui build).
 rustflags = [
   # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
@@ -12,6 +10,10 @@ rustflags = [
   # Required by defmt: interns log strings into a custom linker section.
   "-C",
   "link-arg=-Tdefmt.x",
+  # Required by rustmeter-beacon: keeps the .rustmeter_fn_metadata / .rustmeter_data
+  # sections that the rustmeter CLI reads back out of the ELF.
+  "-C",
+  "link-arg=-Trustmeter.x",
 ]
 
 [env]
