@@ -203,20 +203,23 @@ impl Helper for NodeState {
     }
 
     fn get_ordered_distances(&self) -> Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
-        let mac_addresses = self.get_ordered_mac_addresses();
-        let matrix: Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> = mac_addresses
+        let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
+        self.neighbours.keys().for_each(|&node| {
+            let _ = vec.push(node);
+        });
+        // Mac addresses are unique, so this is fine (more performant then regular sort)
+        vec.sort_unstable();
+
+        let matrix: Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> = vec
             .iter()
             .map(|node| {
                 let neighbours = &self.neighbours[node];
-                mac_addresses
-                    .iter()
+                vec.iter()
                     .map(|n| {
-                        *neighbours.get(n).unwrap_or_else(|| {
-                            if node == n {
-                                return &0.0;
-                            }
-                            &f32::INFINITY
-                        })
+                        neighbours
+                            .get(n)
+                            .map(|state| state.dist)
+                            .unwrap_or_else(|| if node == n { 0.0 } else { f32::INFINITY })
                     })
                     .collect()
             })

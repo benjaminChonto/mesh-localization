@@ -22,7 +22,7 @@ use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::screen;
 use esp32_firmware::state::{Helper, NodeState, State};
-use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, IP_ADDR, MDS_MAX_SIZE, WIFI_PASS, WIFI_SSID, RX_CHANNEL_SIZE};
+use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, MDS_MAX_SIZE, RX_CHANNEL_SIZE};
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
 use log::{error, info};
