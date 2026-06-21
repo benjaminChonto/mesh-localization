@@ -161,15 +161,8 @@ impl NodeState {
 
     // method that generates adjacency matrix to be used for MDS
     pub fn neighbour_matrix(&self) -> Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
-        let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
-        self.neighbours.keys().for_each(|&node| {
-            let _ = vec.push(node);
-        });
-        // Mac addresses are unique, so this is fine (more performant then regular sort)
-        vec.sort_unstable();
-
-        let matrix: Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> = vec
-            .iter()
+        let vec = self.get_ordered_mac_addresses();
+        vec.iter()
             .map(|node| {
                 let neighbours = &self.neighbours[node];
                 vec.iter()
@@ -181,18 +174,10 @@ impl NodeState {
                     })
                     .collect()
             })
-            .collect();
-        matrix
+            .collect()
     }
-}
 
-pub trait Helper {
-    fn get_ordered_mac_addresses(&self) -> Vec<[u8; 6], MAX_SWARM_SIZE>;
-    fn get_ordered_distances(&self) -> Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>;
-}
-
-impl Helper for NodeState {
-    fn get_ordered_mac_addresses(&self) -> Vec<[u8; 6], MAX_SWARM_SIZE> {
+    pub fn get_ordered_mac_addresses(&self) -> Vec<[u8; 6], MAX_SWARM_SIZE> {
         let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
         self.neighbours.keys().for_each(|&node| {
             let _ = vec.push(node);
@@ -202,7 +187,7 @@ impl Helper for NodeState {
         vec
     }
 
-    fn get_ordered_distances(&self) -> Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
+    pub fn get_ordered_distances(&self) -> Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
         let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
         self.neighbours.keys().for_each(|&node| {
             let _ = vec.push(node);
@@ -210,8 +195,7 @@ impl Helper for NodeState {
         // Mac addresses are unique, so this is fine (more performant then regular sort)
         vec.sort_unstable();
 
-        let matrix: Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> = vec
-            .iter()
+        vec.iter()
             .map(|node| {
                 let neighbours = &self.neighbours[node];
                 vec.iter()
@@ -223,7 +207,6 @@ impl Helper for NodeState {
                     })
                     .collect()
             })
-            .collect();
-        matrix
+            .collect()
     }
 }
