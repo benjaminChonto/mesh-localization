@@ -38,6 +38,9 @@ impl MDS {
         }
 
         for _ in 0..MDS_ITERATIONS {
+            // Yield at the top of the loop so the large per-iteration scratch
+            // matrices (`dist`, `B`) are not live across this await point
+            embassy_futures::yield_now().await;
             let dist = pairwise_distances(&self.X);
             let mut B: Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> = Vec::new();
 
@@ -67,7 +70,6 @@ impl MDS {
                 .map(|row| row.iter().copied().map(|e| e / n_fixed).collect())
                 .collect();
             self.X = subtract_mean(&self.X);
-            embassy_futures::yield_now().await;
         }
         &self.X
     }

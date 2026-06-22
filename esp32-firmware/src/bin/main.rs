@@ -161,6 +161,8 @@ async fn process_packet(
     }
 }
 
+// TODO idk if this will overflow
+#[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn calculate_state(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
