@@ -29,7 +29,6 @@ impl MDS {
      *
      * SMACOF algorithm: <https://www.jstatsoft.org/article/view/v031i03>
      */
-    #[monitor_fn]
     pub async fn compute(
         &mut self,
         d: Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,

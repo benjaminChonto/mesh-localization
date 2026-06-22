@@ -245,13 +245,6 @@ async fn main(spawner: embassy_executor::Spawner) {
     }
     info!("Associated with '{}'", WIFI_SSID);
 
-    // spawn rustmeter beacon on the normal thread executor
-    init_rustmeter_beacon(
-        RustmeterConfig::new(Rate::from_mhz(160)).with_serial_jtag_printer(),
-        &spawner,
-    )
-    .unwrap();
-
     let (stack, runner) = embassy_net::new(
         interfaces.station,
         Config::dhcpv4(Default::default()),
@@ -275,6 +268,9 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let (_, tx, rx) = esp_now.split();
 
+    // spawn rustmeter beacon on the normal thread executor
+    init_rustmeter_beacon(RustmeterConfig::new(Rate::from_mhz(160)), &spawner)
+        .expect("failed to initialize rustmeter");
     // Spawn tasks
     spawner.spawn(broadcast_ping(tx, state, perf).unwrap());
     spawner.spawn(receive_packet(rx).unwrap());
