@@ -162,7 +162,36 @@ impl NodeState {
         self.neighbours.insert(mac, measurements);
     }
 
+    // method that generates adjacency matrix to be used for MDS
     pub fn neighbour_matrix(&self) -> Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
+        let vec = self.get_ordered_mac_addresses();
+        vec.iter()
+            .map(|node| {
+                let neighbours = &self.neighbours[node];
+                vec.iter()
+                    .map(|n| {
+                        neighbours
+                            .get(n)
+                            .map(|state| state.dist)
+                            .unwrap_or_else(|| if node == n { I16F16::ZERO } else { I16F16::MAX })
+                    })
+                    .collect()
+            })
+            .collect();
+        vec
+    }
+
+    pub fn get_ordered_mac_addresses(&self) -> Vec<[u8; 6], MAX_SWARM_SIZE> {
+        let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
+        self.neighbours.keys().for_each(|&node| {
+            let _ = vec.push(node);
+        });
+        // Mac addresses are unique, so this is fine (more performant then regular sort)
+        vec.sort_unstable();
+        vec
+    }
+
+    pub fn get_ordered_distances(&self) -> Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
         let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
         self.neighbours.keys().for_each(|&node| {
             let _ = vec.push(node);
@@ -182,6 +211,7 @@ impl NodeState {
                     })
                     .collect()
             })
-            .collect()
+            .collect();
+        vec
     }
 }

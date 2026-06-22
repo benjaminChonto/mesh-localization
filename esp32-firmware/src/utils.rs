@@ -1,3 +1,6 @@
+/**
+ * Environment variables and global constants
+ */
 pub const ID: &str = match option_env!("ID") {
     Some(v) => v,
     None => "0",
