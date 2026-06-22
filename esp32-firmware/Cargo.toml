@@ -29,7 +29,6 @@ esp-rtos = { version = "0.3.0", features = [
   "esp-radio",
   "esp-alloc",
 ] }
-# log = "0.4.27"
 
 embassy-executor = { version = "0.10.0", features = [
   "defmt",
@@ -74,15 +73,7 @@ serde = { version = "1.0", default-features = false, features = [
   "derive",
   "alloc",
 ] }
-
-# esp-println = { version = "0.17.0", default-features = false, features = [
-#   "esp32c3",
-#   "log-04",
-# "jtag-serial",
-# "colors",
-# "critical-section",
-# ] }
-# rustmeter-beacon = { version = "0.2.0", features = ["defmt", "esp32c3"] }
+embassy-futures = "0.1.2"
 
 
 [profile.dev]

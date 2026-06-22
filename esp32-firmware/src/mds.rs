@@ -27,7 +27,10 @@ impl MDS {
      *
      * SMACOF algorithm: <https://www.jstatsoft.org/article/view/v031i03>
      */
-    pub fn compute(&mut self, d: Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>) -> &MdsResult {
+    pub async fn compute(
+        &mut self,
+        d: Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
+    ) -> &MdsResult {
         let D = make_symmetric(d);
         let n = D.len();
         if self.X.is_empty() || self.X.len() != n {
@@ -64,6 +67,7 @@ impl MDS {
                 .map(|row| row.iter().copied().map(|e| e / n_fixed).collect())
                 .collect();
             self.X = subtract_mean(&self.X);
+            embassy_futures::yield_now().await;
         }
         &self.X
     }

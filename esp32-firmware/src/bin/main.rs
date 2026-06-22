@@ -174,8 +174,10 @@ async fn calculate_state(
             Timer::after_millis(5000).await;
             continue;
         }
+
+        // WATCH OUT mds yields, these timings not accurate
         let start_cycles = cpu_cycles();
-        let mds = mds.compute(neighbour_dist);
+        let mds = mds.compute(neighbour_dist).await;
         let finish = cpu_cycles().wrapping_sub(start_cycles);
         {
             state.lock().await.mds = mds.clone(); // TODO the clone might be expensive

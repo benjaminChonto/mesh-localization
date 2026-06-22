@@ -1428,6 +1428,7 @@ dependencies = [
  "defmt 1.1.0",
  "defmt-rtt",
  "embassy-executor",
+ "embassy-futures",
  "embassy-net",
  "embassy-sync 0.8.0",
  "embassy-time",
