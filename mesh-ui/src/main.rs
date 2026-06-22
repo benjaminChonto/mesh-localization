@@ -1,8 +1,10 @@
 use std::{
     collections::{HashMap, VecDeque},
+    fs::{self, File},
+    io::{self, BufWriter, Write},
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ratatui::{
@@ -18,7 +20,7 @@ use shared::{MdsResult, PerformanceMetrics, TelemetryMessage};
 const MOVING_AVG_WINDOW: usize = 20;
 
 struct MovingAvg {
-    buf: VecDeque<u64>,
+    buf: VecDeque<u32>,
 }
 
 impl MovingAvg {
@@ -28,7 +30,7 @@ impl MovingAvg {
         }
     }
 
-    fn push(&mut self, value: u64) {
+    fn push(&mut self, value: u32) {
         if self.buf.len() >= MOVING_AVG_WINDOW {
             self.buf.pop_front();
         }
@@ -40,7 +42,7 @@ impl MovingAvg {
         if self.buf.is_empty() {
             return 0.0;
         }
-        self.buf.iter().sum::<u64>() as f64 / self.buf.len() as f64
+        self.buf.iter().sum::<u32>() as f64 / self.buf.len() as f64
     }
 }
 
@@ -65,9 +67,9 @@ impl NodePerfState {
 
     fn update(&mut self, metrics: PerformanceMetrics) {
         self.latest = metrics;
-        self.broadcast_avg.push(metrics.broadcast_clone_dist_ns);
-        self.process_avg.push(metrics.process_packet_ns);
-        self.calculate_avg.push(metrics.calculate_state_ns);
+        self.broadcast_avg.push(metrics.broadcast_clone_dist_cycles);
+        self.process_avg.push(metrics.process_packet_cycles);
+        self.calculate_avg.push(metrics.calculate_state_cycles);
     }
 }
 
@@ -113,12 +115,75 @@ impl AppState {
     }
 }
 
+/// Milliseconds since the Unix epoch, used as the timestamp column in the CSV log.
+fn unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
+}
+
+/// Appends every received performance sample to a CSV file so runs can be
+/// analyzed offline (e.g. with pandas/Excel). Each row carries both the raw
+/// CPU cycle counts (the precise on-chip measurement) and their microsecond
+/// equivalents derived from the firmware clock rate.
+struct PerfCsvLogger {
+    writer: BufWriter<File>,
+    path: String,
+}
+
+impl PerfCsvLogger {
+    fn new() -> io::Result<Self> {
+        // Ensure the log directory exists; `File::create` does not create parents.
+        fs::create_dir_all("logs")?;
+        let path = format!("logs/perf-log-{}.csv", unix_millis());
+        let mut writer = BufWriter::new(File::create(&path)?);
+        writeln!(
+            writer,
+            "unix_ms,node_id,broadcast_clone_dist_cycles,process_packet_cycles,\
+             calculate_state_cycles,broadcast_clone_dist_ns,process_packet_ns,calculate_state_ns"
+        )?;
+        writer.flush()?;
+        Ok(Self { writer, path })
+    }
+
+    fn log(&mut self, node_id: &str, m: &PerformanceMetrics) -> io::Result<()> {
+        writeln!(
+            self.writer,
+            "{},{},{},{},{},{:.3},{:.3},{:.3}",
+            unix_millis(),
+            node_id,
+            m.broadcast_clone_dist_cycles,
+            m.process_packet_cycles,
+            m.calculate_state_cycles,
+            cycles_to_ns(m.broadcast_clone_dist_cycles as f64),
+            cycles_to_ns(m.process_packet_cycles as f64),
+            cycles_to_ns(m.calculate_state_cycles as f64),
+        )?;
+        // Flush every row: samples arrive slowly (~20/s) and we don't want to
+        // lose data if the UI is killed with Ctrl-C.
+        self.writer.flush()
+    }
+}
+
 fn read_mqtt(tx: &Sender<UiEvent>) {
     let mqtt_opt = MqttOptions::new("mesh-ui", "localhost", 1883);
     let (client, mut connection) = Client::new(mqtt_opt, 10);
     if let Err(e) = client.subscribe("telemetry/+", QoS::AtLeastOnce) {
         eprintln!("Could not subscribe: {e}");
     }
+
+    // Best-effort CSV logging of performance samples; if the file can't be
+    // opened we still run the UI, just without persisting metrics.
+    let mut csv_logger = match PerfCsvLogger::new() {
+        Ok(logger) => {
+            let _ = tx.send(UiEvent::Error(format!("Logging perf to {}", logger.path)));
+            Some(logger)
+        }
+        Err(e) => {
+            let _ = tx.send(UiEvent::Error(format!("Could not open perf CSV log: {e}")));
+            None
+        }
+    };
 
     for event in connection.iter() {
         match event {
@@ -130,6 +195,11 @@ fn read_mqtt(tx: &Sender<UiEvent>) {
                     }
                     Ok(TelemetryMessage::Mds(_)) => {}
                     Ok(TelemetryMessage::Perf(metrics)) => {
+                        if let Some(logger) = csv_logger.as_mut()
+                            && let Err(e) = logger.log(&node_id, &metrics)
+                        {
+                            eprintln!("perf CSV write failed: {e}");
+                        }
                         let _ = tx.send(UiEvent::Perf { node_id, metrics });
                     }
                     Ok(TelemetryMessage::Log { .. }) => {}
@@ -249,8 +319,17 @@ fn render_chart(frame: &mut Frame, positions: Option<&MdsResult>, area: ratatui:
     frame.render_widget(chart, area);
 }
 
-fn time_display(current: u64, avg: f64) -> String {
-    format!("{current}micros / {avg:.0}micros")
+fn cycles_to_ns(cycles: f64) -> f64 {
+    cycles / (shared::CPU_CLOCK_HZ as f64 / 1_000_000_000.0)
+}
+
+fn time_display(current: u32, avg: f64) -> String {
+    // Compute in nanoseconds for precision, then display as milliseconds (3 dp).
+    format!(
+        "{:.3}ms / {:.3}ms",
+        cycles_to_ns(current as f64) / 1_000_000.0,
+        cycles_to_ns(avg) / 1_000_000.0
+    )
 }
 
 fn render_perf(
@@ -282,9 +361,9 @@ fn render_perf(
             let s = &nodes[*id];
             Row::new([
                 (*id).to_string(),
-                time_display(s.latest.broadcast_clone_dist_ns, s.broadcast_avg.avg()),
-                time_display(s.latest.process_packet_ns, s.process_avg.avg()),
-                time_display(s.latest.calculate_state_ns, s.calculate_avg.avg()),
+                time_display(s.latest.broadcast_clone_dist_cycles, s.broadcast_avg.avg()),
+                time_display(s.latest.process_packet_cycles, s.process_avg.avg()),
+                time_display(s.latest.calculate_state_cycles, s.calculate_avg.avg()),
             ])
         })
         .collect();

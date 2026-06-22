@@ -9,3 +9,16 @@ pub const MDS_MAX_SIZE: usize = 128;
 pub const DISTANCE_MAP_MAX_SIZE: usize = 250;
 pub const RX_CHANNEL_SIZE: usize = 256;
 pub const MQTT_TX_CHANNEL_SIZE: usize = 256;
+
+/// Raw CPU cycle counter for the ESP32-C3.
+/// It is 32-bit and wraps every
+/// ~26.8 s at 160 MHz, so `wrapping_sub` over short spans is exact.
+#[inline]
+pub fn cpu_cycles() -> u32 {
+    let cycles: u32;
+    // SAFETY: plain read of a machine-mode CSR; runs in M-mode on the C3.
+    unsafe {
+        core::arch::asm!("csrr {0}, 0x7e2", out(reg) cycles, options(nomem, nostack));
+    }
+    cycles
+}

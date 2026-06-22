@@ -15,7 +15,7 @@ use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
@@ -24,7 +24,7 @@ use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::state::{NodeState, State};
 use esp32_firmware::utils::{
-    DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, RX_CHANNEL_SIZE,
+    DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, RX_CHANNEL_SIZE, cpu_cycles,
 };
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
@@ -71,7 +71,8 @@ async fn broadcast_ping(
     let mut serializer_buff = [0u8; DISTANCE_MAP_MAX_SIZE];
 
     loop {
-        let start = Instant::now();
+        // Measure in raw CPU cycles for maximum precision (see `cpu_cycles`).
+        let start_cycles = cpu_cycles();
         let mut distances: Option<HashMap<[u8; 6], State>> = None;
         {
             distances = {
@@ -80,7 +81,7 @@ async fn broadcast_ping(
                 node_state.neighbours.get(&node_state.mac).cloned()
             };
         }
-        let finish = start.elapsed().as_micros();
+        let finish = cpu_cycles().wrapping_sub(start_cycles);
 
         let Ok(msg) = postcard::to_slice(&distances.unwrap_or_default(), &mut serializer_buff)
         else {
@@ -98,39 +99,37 @@ async fn broadcast_ping(
             }
         }
         {
-            perf.lock().await.broadcast_clone_dist_ns = finish;
+            perf.lock().await.broadcast_clone_dist_cycles = finish;
         }
-        Timer::after_millis(500).await;
+        Timer::after_millis(100).await;
     }
 }
 
 // TODO idk if this will overflow
 #[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
-async fn receive_packet(rx: EspNowReceiver<'static>) {
+async fn receive_packet(mut rx: EspNowReceiver<'static>) {
     loop {
-        while let Some(packet) = rx.receive() {
-            let rssi = packet.info.rx_control.rssi as i8;
-            let src = packet.info.src_address;
+        // Park the task until the ESP-NOW RX interrupt wakes us (no polling).
+        let packet = rx.receive_async().await;
+        let rssi = packet.info.rx_control.rssi as i8;
+        let src = packet.info.src_address;
 
-            let payload = packet.data();
-            let len = payload.len().min(256);
+        let payload = packet.data();
+        let len = payload.len().min(256);
 
-            // copy to pass ownership
-            let mut data = [0u8; 256];
-            data[..len].copy_from_slice(&payload[..len]);
+        // copy to pass ownership
+        let mut data = [0u8; 256];
+        data[..len].copy_from_slice(&payload[..len]);
 
-            let _ = RX_CHANNEL
-                .send(RxPacket {
-                    src,
-                    rssi,
-                    len,
-                    data,
-                })
-                .await; // yield if channel is full
-        }
-
-        Timer::after_millis(100).await;
+        let _ = RX_CHANNEL
+            .send(RxPacket {
+                src,
+                rssi,
+                len,
+                data,
+            })
+            .await; // yield if channel is full
     }
 }
 
@@ -140,29 +139,25 @@ async fn process_packet(
     perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
 ) {
     loop {
-        while let Ok(packet) = RX_CHANNEL.try_receive() {
-            let data: Result<HashMap<[u8; 6], State>, Error> =
-                postcard::from_bytes(&packet.data[..packet.len]);
+        // Wakes the instant a packet is pushed onto the channel; drains as fast
+        // as packets arrive without the old fixed-interval polling.
+        let packet = RX_CHANNEL.receive().await;
+        let data: Result<HashMap<[u8; 6], State>, Error> =
+            postcard::from_bytes(&packet.data[..packet.len]);
 
-            let start = Instant::now();
-            {
-                let mut node_state = state.lock().await;
-                let mac = node_state.mac; // own mac address
-                node_state.update_distance_from_self(mac, packet.src, packet.rssi);
-                let _ = data
-                    .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
-                    .inspect_err(|e| error!("Failed to update data: {}", defmt::Debug2Format(&e)));
-            }
-            let finish = start.elapsed().as_micros();
-            {
-                perf.lock().await.process_packet_ns = finish;
-            }
+        let start_cycles = cpu_cycles();
+        {
+            let mut node_state = state.lock().await;
+            let mac = node_state.mac; // own mac address
+            node_state.update_distance_from_self(mac, packet.src, packet.rssi);
+            let _ = data
+                .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
+                .inspect_err(|e| error!("Failed to update data: {}", defmt::Debug2Format(&e)));
         }
-
-        // TODO this is random timing, might want to mess with it
-        // if i didnt have this i think this task stalled the draining of the channel
-        // and if i added a 3rd esp it would go slower for it
-        Timer::after_millis(10).await;
+        let finish = cpu_cycles().wrapping_sub(start_cycles);
+        {
+            perf.lock().await.process_packet_cycles = finish;
+        }
     }
 }
 
@@ -179,22 +174,17 @@ async fn calculate_state(
             Timer::after_millis(5000).await;
             continue;
         }
-        let start = Instant::now();
+        let start_cycles = cpu_cycles();
         let mds = mds.compute(neighbour_dist);
-        let finish = start.elapsed().as_micros();
+        let finish = cpu_cycles().wrapping_sub(start_cycles);
         {
             state.lock().await.mds = mds.clone(); // TODO the clone might be expensive
-            perf.lock().await.calculate_state_ns = finish;
+            // double clone :(
+            // but publish state when available
+            let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(state.lock().await.mds.clone()));
+            perf.lock().await.calculate_state_cycles = finish;
         }
-        Timer::after_millis(500).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn publish_state(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
-    loop {
-        let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(state.lock().await.mds.clone()));
-        Timer::after_millis(500).await;
+        Timer::after_millis(100).await;
     }
 }
 
@@ -271,13 +261,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(process_packet(state, perf).unwrap());
     spawner.spawn(calculate_state(state, perf).unwrap());
     spawner.spawn(publish_metrics(perf).unwrap());
-    spawner.spawn(publish_state(state).unwrap());
 
-    // init_rustmeter_beacon(
-    //     RustmeterConfig::new(config.cpu_clock().frequency()),
-    //     &spawner,
-    // );
-    //
     let topic = alloc::format!("telemetry/{ID}");
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];
     loop {

@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 pub const MAX_SWARM_SIZE: usize = 10;
 pub type MdsResult = Vec<Vec<I16F16, 2>, MAX_SWARM_SIZE>;
 
+/// CPU clock the firmware runs at (ESP32-C3 at `CpuClock::max()` == 160 MHz).
+/// Single source of truth for converting raw CPU cycle counts to wall-clock time.
+pub const CPU_CLOCK_HZ: u64 = 160_000_000;
+
 #[derive(Serialize, Deserialize)]
 pub enum TelemetryMessage<'a> {
     Log { msg: &'a str },
@@ -13,35 +17,22 @@ pub enum TelemetryMessage<'a> {
     Perf(PerformanceMetrics),
 }
 
+/// Per-task timings measured in raw CPU cycles (read from the RISC-V `mcycle` CSR).
+/// Cycles are the most precise clock available on the chip; divide by
+/// [`CPU_CLOCK_HZ`] to convert to seconds.
 #[derive(Serialize, Clone, Copy, Default, Deserialize)]
 pub struct PerformanceMetrics {
-    pub broadcast_clone_dist_ns: u64,
-    pub process_packet_ns: u64,
-    pub calculate_state_ns: u64,
-    // pub avg_broadcast_ping_ms: u64,
-    // pub avg_process_packet_ms: u64,
-    // pub avg_calculate_state_ms: u64,
-    // pub avg_rx_queue_depth: usize,
-    // pub n_broadcast: u64,
-    // pub n_packet: u64,
-    // pub n_calculate_state: u64,
-    // pub n_rx_queue_depth: usize,
+    pub broadcast_clone_dist_cycles: u32,
+    pub process_packet_cycles: u32,
+    pub calculate_state_cycles: u32,
 }
 
 impl PerformanceMetrics {
     pub fn new() -> PerformanceMetrics {
         PerformanceMetrics {
-            broadcast_clone_dist_ns: 0,
-            process_packet_ns: 0,
-            calculate_state_ns: 0,
-            // avg_broadcast_ping_ms: 0,
-            // avg_process_packet_ms: 0,
-            // avg_calculate_state_ms: 0,
-            // avg_rx_queue_depth: 0,
-            // n_broadcast: 0,
-            // n_packet: 0,
-            // n_calculate_state: 0,
-            // n_rx_queue_depth: 0,
+            broadcast_clone_dist_cycles: 0,
+            process_packet_cycles: 0,
+            calculate_state_cycles: 0,
         }
     }
 }
