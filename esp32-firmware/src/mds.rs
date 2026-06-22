@@ -1,3 +1,4 @@
+use crate::kabsch;
 use crate::state::MAX_SWARM_SIZE;
 use esp_hal::rng::Rng;
 use fixed::types::I16F16;
@@ -10,6 +11,9 @@ const MDS_ITERATIONS: usize = 50;
 #[derive(Default)]
 pub struct MDS {
     X: MdsResult,
+    /// Previous (Kabsch-aligned) solution, used as the orientation reference for
+    /// the next solve so the configuration stays stable frame-to-frame.
+    prev: MdsResult,
 }
 
 impl MDS {
@@ -33,7 +37,10 @@ impl MDS {
     ) -> &MdsResult {
         let D = make_symmetric(d);
         let n = D.len();
-        if self.X.is_empty() || self.X.len() != n {
+        // A fresh random start has no meaningful orientation to preserve, so we
+        // only Kabsch-align when warm-starting from a previous solution.
+        let reinitialized = self.X.is_empty() || self.X.len() != n;
+        if reinitialized {
             self.X = initialize_mds(n);
         }
 
@@ -71,6 +78,16 @@ impl MDS {
                 .collect();
             self.X = subtract_mean(&self.X);
         }
+
+        // Orient the new solution to match the previous one (rotation +
+        // translation, no scaling), then remember it as the next reference.
+        // Done after the SMACOF loop so the alignment scratch never crosses an
+        // await point and bloats this task's future.
+        if !reinitialized && self.prev.len() == n {
+            self.X = kabsch::align(&self.X, &self.prev);
+        }
+        self.prev = self.X.clone();
+
         &self.X
     }
 }
