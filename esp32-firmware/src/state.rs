@@ -177,8 +177,7 @@ impl NodeState {
                     })
                     .collect()
             })
-            .collect();
-        vec
+            .collect()
     }
 
     pub fn get_ordered_mac_addresses(&self) -> Vec<[u8; 6], MAX_SWARM_SIZE> {
@@ -211,7 +210,6 @@ impl NodeState {
                     })
                     .collect()
             })
-            .collect();
-        vec
+            .collect()
     }
 }

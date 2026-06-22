@@ -4,8 +4,9 @@ use alloc::boxed::Box;
 use alloc::format;
 use display_interface::DisplayError;
 use embedded_graphics::pixelcolor::BinaryColor;
+use fixed::types::I16F16;
 use heapless::Vec;
-use log::error;
+use defmt::error;
 use mousefood::error::Error as RenderError;
 use mousefood::prelude::*;
 use ratatui::style::Color;
@@ -52,22 +53,22 @@ where
 pub fn render_mds<'d, I>(
     terminal: &mut ScreenTerminal<'d, I>,
     macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
-    distances: &Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
-    mds: &Vec<Vec<f32, 2>, MAX_SWARM_SIZE>,
+    distances: &Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
+    mds: &Vec<Vec<I16F16, 2>, MAX_SWARM_SIZE>,
     id: &[u8; 6],
 ) where
     I: embedded_hal::i2c::I2c + 'static,
 {
     if let Err(e) = try_render_mds(terminal, macs, distances, mds, id) {
-        error!("screen::render_mds: {e:?}");
+        error!("screen::render_mds: {}", defmt::Debug2Format(&e));
     }
 }
 
 fn try_render_mds<'d, I>(
     terminal: &mut ScreenTerminal<'d, I>,
     macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
-    distances: &Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
-    mds: &Vec<Vec<f32, 2>, MAX_SWARM_SIZE>,
+    distances: &Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
+    mds: &Vec<Vec<I16F16, 2>, MAX_SWARM_SIZE>,
     id: &[u8; 6],
 ) -> Result<(), RenderError>
 where
@@ -81,8 +82,8 @@ where
 fn draw_mds(
     frame: &mut Frame,
     macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
-    distances: &Vec<Vec<f32, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
-    mds: &Vec<Vec<f32, 2>, MAX_SWARM_SIZE>,
+    distances: &Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
+    mds: &Vec<Vec<I16F16, 2>, MAX_SWARM_SIZE>,
     id: &[u8; 6],
 ) {
     if mds.is_empty() {
@@ -101,8 +102,8 @@ fn draw_mds(
 
     for (i, point) in mds.iter().enumerate() {
         coords[i] = (
-            point[0] as f64 - centerpoint[0] as f64,
-            point[1] as f64 - centerpoint[1] as f64,
+            point[0].to_num::<f64>() - centerpoint[0].to_num::<f64>(),
+            point[1].to_num::<f64>() - centerpoint[1].to_num::<f64>(),
         );
     }
 
@@ -131,7 +132,7 @@ fn draw_mds(
                 let line = if (x, y) == (0.0, 0.0) {
                     continue;
                 } else {
-                    format!("{:.2}m", distances[current_node_index][i])
+                    format!("{:.2}m", distances[current_node_index][i].to_num::<f64>())
                 };
                 ctx.print(x, y - 0.02, line);
             }

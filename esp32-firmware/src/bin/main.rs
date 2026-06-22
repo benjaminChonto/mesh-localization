@@ -18,6 +18,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channe
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::{Level, OutputConfig};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
@@ -247,6 +248,10 @@ async fn main(spawner: embassy_executor::Spawner) {
     stack.wait_config_up().await;
     let esp_now = interfaces.esp_now;
 
+    // On board status led
+    let mut led =
+        esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+
     let i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
         .unwrap()
         .with_sda(peripherals.GPIO0)
@@ -255,7 +260,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let mut display = match screen::init(i2c) {
         Ok(d) => Some(d),
         Err(e) => {
-            info!("Failed to initialize display: {e:?}");
+            info!("Failed to initialize display: {}", defmt::Debug2Format(&e));
             None
         }
     };
@@ -315,23 +320,22 @@ async fn main(spawner: embassy_executor::Spawner) {
 
         loop {
             led.toggle();
-
-            {
+            // Snapshot the shared state, releasing the lock at the end of this block
+            // so the values stay live for the display render below.
+            let (mds, macs, distances, id) = {
                 let node_state = state.lock().await;
                 info!(
                     "neighbours:\n{}\nmds:\n{}",
                     defmt::Debug2Format(&node_state.neighbour_matrix()),
                     defmt::Debug2Format(&node_state.mds)
                 );
-                let (mds, macs, distances, id) = {
-                    (
-                        node_state.mds.clone(),
-                        node_state.get_ordered_mac_addresses(),
-                        node_state.get_ordered_distances(),
-                        node_state.mac,
-                    )
-                };
-            }
+                (
+                    node_state.mds.clone(),
+                    node_state.get_ordered_mac_addresses(),
+                    node_state.get_ordered_distances(),
+                    node_state.mac,
+                )
+            };
 
             // drain message to server queue
             while let Ok(telmsg) = MQTT_TX_CHANNEL.try_receive() {
