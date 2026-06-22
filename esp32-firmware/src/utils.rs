@@ -1,3 +1,6 @@
+/**
+ * Environment variables and global constants
+ */
 pub const _ID: Option<&str> = option_env!("ID");
 
 // 2 x 10 matrix of f32 (4bytes) + 11 bytes type information = 91 bytes

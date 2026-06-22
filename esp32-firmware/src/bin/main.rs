@@ -16,10 +16,11 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channe
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::{Level, OutputConfig};
+use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
+use esp32_firmware::screen;
 use esp32_firmware::state::{NodeState, State};
 use esp32_firmware::utils::{DISTANCE_MAP_MAX_SIZE, MDS_MAX_SIZE, RX_CHANNEL_SIZE};
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
@@ -152,7 +153,7 @@ async fn calculate_state(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
         {
             state.lock().await.mds = mds.clone();
         }
-        Timer::after_millis(5000).await;
+        Timer::after_millis(2000).await;
     }
 }
 
@@ -199,11 +200,27 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(net_task(runner).unwrap());
     stack.wait_config_up().await;
     let esp_now = interfaces.esp_now;
-    // esp_now.set_channel(1).unwrap();
 
-    // On board status led
-    let mut led =
-        esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+    let i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
+        .unwrap()
+        .with_sda(peripherals.GPIO0)
+        .with_scl(peripherals.GPIO1);
+
+    let mut display = match screen::init(i2c) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            info!("Failed to initialize display: {e:?}");
+            None
+        }
+    };
+
+    let mut terminal = if let Some(ref mut display) = display {
+        info!("Display initialized");
+        screen::init_terminal(display).ok()
+    } else {
+        info!("Running without display");
+        None
+    };
 
     let state: &'static Mutex<CriticalSectionRawMutex, NodeState> =
         STATE.init(Mutex::new(NodeState::new(mac)));
@@ -244,31 +261,42 @@ async fn main(spawner: embassy_executor::Spawner) {
         });
 
         loop {
-            led.toggle();
-            {
+            let (mds, macs, distances, id) = {
                 let node_state = state.lock().await;
                 info!(
                     "neighbours:\n{:?}\nmds:\n{:?}",
                     node_state.neighbour_matrix(),
                     node_state.mds
                 );
-                let msg: &[u8] = match postcard::to_slice(&node_state.mds, &mut serializer_buff) {
-                    Ok(rs) => rs,
-                    Err(_) => &[], // todo consider creating error codes and publishing to mq
-                };
-                match mqtt_session.publish(Publication::new("mds", msg)).await {
-                    Ok(_) => {}
-                    Err(minimq::PubError::Session(e)) => {
-                        error!("Connection failed, reconnecting ... {e}");
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Payload serialization error: {e}");
-                    }
+                (
+                    node_state.mds.clone(),
+                    node_state.get_ordered_mac_addresses(),
+                    node_state.get_ordered_distances(),
+                    node_state.mac,
+                )
+            };
+
+            let msg: &[u8] = match postcard::to_slice(&mds, &mut serializer_buff) {
+                Ok(rs) => rs,
+                Err(_) => &[],
+            };
+
+            match mqtt_session.publish(Publication::new("mds", msg)).await {
+                Ok(_) => {}
+                Err(minimq::PubError::Session(e)) => {
+                    error!("Connection failed, reconnecting ... {e}");
+                    break;
+                }
+                Err(e) => {
+                    error!("Payload serialization error: {e}");
                 }
             }
 
-            Timer::after(Duration::from_millis(3000)).await;
+            if let Some(ref mut terminal) = terminal {
+                screen::render_mds(terminal, &macs, &distances, &mds, &id);
+            }
+
+            Timer::after(Duration::from_millis(1000)).await;
         }
     }
 }

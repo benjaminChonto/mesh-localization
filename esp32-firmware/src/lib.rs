@@ -5,6 +5,7 @@
     reason = "we're using the same variable names as the paper"
 )]
 pub mod mds;
+pub mod screen;
 pub mod state;
 pub mod utils;
 pub mod wificonfig;
