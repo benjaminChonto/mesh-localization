@@ -172,7 +172,17 @@ async fn calculate_state(
 ) {
     let mut mds = MDS::default();
     loop {
-        let neighbour_dist = { state.lock().await.neighbour_matrix() };
+        let (neighbour_dist, anchor) = {
+            let node_state = state.lock().await;
+            let dist = node_state.neighbour_matrix();
+            // Index of this device in the sorted-MAC ordering used by the matrix,
+            // so MDS can pin it at the origin.
+            let anchor = node_state
+                .get_ordered_mac_addresses()
+                .iter()
+                .position(|&mac| mac == node_state.mac);
+            (dist, anchor)
+        };
         if neighbour_dist.iter().any(|row| row.contains(&I16F16::MAX)) {
             // Neighbour matrix is incomplete
             Timer::after_millis(5000).await;
@@ -181,7 +191,7 @@ async fn calculate_state(
 
         // WATCH OUT mds yields, these timings not accurate
         let start_cycles = cpu_cycles();
-        let mds = mds.compute(neighbour_dist).await;
+        let mds = mds.compute(neighbour_dist, anchor).await;
         let finish = cpu_cycles().wrapping_sub(start_cycles);
         {
             state.lock().await.mds = mds.clone(); // TODO the clone might be expensive

@@ -30,10 +30,15 @@ impl MDS {
      * - substract mean from X (doesn't change end result, but keeps the values stable)
      *
      * SMACOF algorithm: <https://www.jstatsoft.org/article/view/v031i03>
+     *
+     * `anchor` is the index (in the swarm's sorted-MAC ordering) of this device
+     * itself. When given, the final configuration is translated so that node
+     * sits at the origin, i.e. the map is expressed in this node's own frame.
      */
     pub async fn compute(
         &mut self,
         d: Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
+        anchor: Option<usize>,
     ) -> &MdsResult {
         let D = make_symmetric(d);
         let n = D.len();
@@ -86,6 +91,19 @@ impl MDS {
         if !reinitialized && self.prev.len() == n {
             self.X = kabsch::align(&self.X, &self.prev);
         }
+
+        // Pin this device's own node at the origin, so the configuration is
+        // expressed in this node's frame. Translation is rigid and does not
+        // affect the next frame's Kabsch rotation (which only depends on
+        // centred coordinates), so we anchor before storing `prev`.
+        if let Some(a) = anchor.filter(|&a| a < self.X.len()) {
+            let (ax, ay) = (self.X[a][0], self.X[a][1]);
+            for p in self.X.iter_mut() {
+                p[0] -= ax;
+                p[1] -= ay;
+            }
+        }
+
         self.prev = self.X.clone();
 
         &self.X
