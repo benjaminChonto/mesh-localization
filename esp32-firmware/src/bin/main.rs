@@ -165,6 +165,13 @@ async fn process_packet(
     }
 }
 
+async fn expire_stale_neighbors(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
+    loop {
+        Timer::after_secs(1).await;
+        state.lock().await.expire_stale();
+    }
+}
+
 // TODO idk if this will overflow
 #[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
@@ -321,6 +328,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(calculate_state(state, perf).unwrap());
     spawner.spawn(publish_metrics(perf).unwrap());
     spawner.spawn(update_screen(state, terminal).unwrap());
+    spawner.spawn(expire_stale_neighbors(state).unwrap());
 
     let topic = alloc::format!("telemetry/{ID}");
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];

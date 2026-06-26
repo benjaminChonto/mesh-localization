@@ -8,5 +8,6 @@ pub mod kabsch;
 pub mod mds;
 pub mod screen;
 pub mod state;
+pub mod topology;
 pub mod utils;
 pub mod wificonfig;

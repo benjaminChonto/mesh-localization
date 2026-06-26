@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use embassy_time::{Duration, Instant};
 use fixed::types::I16F16;
 use hashbrown::HashMap;
 use heapless::Vec;
@@ -10,6 +11,7 @@ use shared::MdsResult;
 include!(concat!(env!("OUT_DIR"), "/rssi_to_dist.rs"));
 
 pub const MAX_SWARM_SIZE: usize = 10;
+const NEIGHBOR_EXPIRY: Duration = Duration::from_secs(10);
 
 const EMA_ALPHA: I16F16 = I16F16::from_bits(19661); // ≈ 0.3
 const ONE_MINUS_EMA: I16F16 = I16F16::from_bits(45875); // ≈ 0.7
@@ -121,6 +123,7 @@ pub struct NodeState {
     pub mac: [u8; 6],
     pub neighbours: HashMap<[u8; 6], HashMap<[u8; 6], State>>,
     pub mds: MdsResult,
+    last_seen: HashMap<[u8; 6], Instant>,
 }
 
 impl NodeState {
@@ -129,6 +132,7 @@ impl NodeState {
             mac,
             neighbours: HashMap::new(),
             mds: Vec::default(),
+            last_seen: HashMap::new(),
         };
         state.neighbours.insert(mac, HashMap::new());
         state
@@ -143,6 +147,7 @@ impl NodeState {
     // broadcast from
     // src = own node, address = node we received it from
     pub fn update_distance_from_self(&mut self, self_addr: [u8; 6], other_addr: [u8; 6], rssi: i8) {
+        self.last_seen.insert(other_addr, Instant::now());
         let state_map = self
             .neighbours
             .get_mut(&self_addr)
@@ -151,6 +156,28 @@ impl NodeState {
             .entry(other_addr)
             .and_modify(|state| state.update(rssi))
             .or_insert_with(|| State::new(rssi));
+    }
+
+    pub fn expire_stale(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<[u8; 6], MAX_SWARM_SIZE> = self
+            .neighbours
+            .keys()
+            .filter(|&&mac| {
+                mac != self.mac
+                    && self
+                        .last_seen
+                        .get(&mac)
+                        .and_then(|&t| now.checked_duration_since(t))
+                        .map_or(true, |elapsed| elapsed > NEIGHBOR_EXPIRY)
+            })
+            .copied()
+            .collect();
+
+        for mac in &expired {
+            self.neighbours.remove(mac);
+            self.last_seen.remove(mac);
+        }
     }
 
     // method that updates the matrix of measurements that a node has of its neighbours
