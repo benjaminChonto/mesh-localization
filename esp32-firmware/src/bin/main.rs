@@ -77,14 +77,12 @@ async fn broadcast_ping(
     loop {
         // Measure in raw CPU cycles for maximum precision (see `cpu_cycles`).
         let start_cycles = cpu_cycles();
-        let mut distances: Option<HashMap<[u8; 6], State>> = None;
-        {
-            distances = {
-                // mac addr-> 6 * 10 * 4
-                let node_state = state.lock().await;
-                node_state.neighbours.get(&node_state.mac).cloned()
-            };
-        }
+        let distances = {
+            // mac addr-> 6 * 10 * 4
+            state.lock().await.expire_stale();
+            let node_state = state.lock().await;
+            node_state.neighbours.get(&node_state.mac).cloned()
+        };
         let finish = cpu_cycles().wrapping_sub(start_cycles);
 
         let Ok(msg) = postcard::to_slice(&distances.unwrap_or_default(), &mut serializer_buff)
