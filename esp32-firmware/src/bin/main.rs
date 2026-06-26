@@ -24,15 +24,17 @@ use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
+use esp32_firmware::routing;
 use esp32_firmware::screen;
 use esp32_firmware::state::{NodeState, State};
+use esp32_firmware::topology::{Packet, Topology};
 use esp32_firmware::utils::{
-    DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, RX_CHANNEL_SIZE, cpu_cycles,
+    ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, RX_CHANNEL_SIZE, TX_CHANNEL_SIZE, cpu_cycles,
 };
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
+use heapless::Vec;
 use minimq::{Buffers, ConfigBuilder, Publication, Session};
-use postcard::Error;
 use shared::{I16F16, PerformanceMetrics, TelemetryMessage};
 use static_cell::StaticCell;
 
@@ -47,8 +49,10 @@ const BROADCAST: [u8; 6] = [0xff; 6];
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
 static METRICS: StaticCell<Mutex<CriticalSectionRawMutex, PerformanceMetrics>> = StaticCell::new();
 static DISPLAY: StaticCell<screen::Display<I2c<'static, Blocking>>> = StaticCell::new();
+static TC_TOPOLOGY: StaticCell<Mutex<CriticalSectionRawMutex, Topology>> = StaticCell::new();
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, RX_CHANNEL_SIZE> = Channel::new();
+static TX_CHANNEL: Channel<CriticalSectionRawMutex, TxPacket, TX_CHANNEL_SIZE> = Channel::new();
 static MQTT_TX_CHANNEL: Channel<CriticalSectionRawMutex, TelemetryMessage, MQTT_TX_CHANNEL_SIZE> =
     Channel::new();
 
@@ -61,49 +65,85 @@ pub struct RxPacket {
     pub data: [u8; 256], // TODO figure out max data packet len
 }
 
+pub struct TxPacket {
+    pub dst: [u8; 6],
+    pub len: usize,
+    pub data: [u8; 256],
+}
+
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface<'static>>) {
     runner.run().await;
 }
 
 #[embassy_executor::task]
-async fn broadcast_ping(
-    mut tx: EspNowSender<'static>,
-    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
-    perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
-) {
-    let mut serializer_buff = [0u8; DISTANCE_MAP_MAX_SIZE];
+async fn tx_task(mut tx: EspNowSender<'static>) {
+    loop {
+        let packet = TX_CHANNEL.receive().await;
+        match tx.send(&packet.dst, &packet.data[..packet.len]) {
+            Ok(waiter) => {
+                let _ = waiter.wait();
+            }
+            Err(e) => {
+                warn!("TX failed: {:?}", e);
+            }
+        }
+    }
+}
 
+#[embassy_executor::task]
+async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
+    let mut buf = [0u8; 256];
     loop {
         // Measure in raw CPU cycles for maximum precision (see `cpu_cycles`).
         let start_cycles = cpu_cycles();
         let distances = {
-            // mac addr-> 6 * 10 * 4
             state.lock().await.expire_stale();
             let node_state = state.lock().await;
             node_state.neighbours.get(&node_state.mac).cloned()
         };
         let finish = cpu_cycles().wrapping_sub(start_cycles);
 
-        let Ok(msg) = postcard::to_slice(&distances.unwrap_or_default(), &mut serializer_buff)
-        else {
-            warn!("broadcast_ping: serializer buffer too small, skipping");
-            Timer::after_millis(500).await;
-            continue;
+        let packet = Packet::Hello(distances.unwrap_or_default());
+        if let Ok(msg) = postcard::to_slice(&packet, &mut buf) {
+            let len = msg.len();
+            let mut data = [0u8; 256];
+            data[..len].copy_from_slice(msg);
+            TX_CHANNEL.send(TxPacket { dst: BROADCAST, len, data }).await;
+        }
+
+        Timer::after_millis(500).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn broadcast_tc(
+    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+    topology: &'static Mutex<CriticalSectionRawMutex, Topology>,
+) {
+    use esp32_firmware::state::MAX_SWARM_SIZE;
+    let mut buf = [0u8; 256];
+    loop {
+        Timer::after(Duration::from_secs(5)).await;
+
+        let neighbors: Vec<[u8; 6], MAX_SWARM_SIZE> = {
+            let node_state = state.lock().await;
+            node_state
+                .neighbours
+                .get(&node_state.mac)
+                .map(|m| m.keys().copied().collect())
+                .unwrap_or_default()
         };
 
-        match tx.send(&BROADCAST, msg) {
-            Ok(waiter) => {
-                let _ = waiter.wait();
-            }
-            Err(e) => {
-                warn!("Could not send message {:?}", e);
-            }
+        let tc = topology.lock().await.generate_tc_message(neighbors);
+        let packet = Packet::Tc(tc);
+
+        if let Ok(msg) = postcard::to_slice(&packet, &mut buf) {
+            let len = msg.len();
+            let mut data = [0u8; 256];
+            data[..len].copy_from_slice(msg);
+            TX_CHANNEL.send(TxPacket { dst: BROADCAST, len, data }).await;
         }
-        {
-            perf.lock().await.broadcast_clone_dist_cycles = finish;
-        }
-        Timer::after_millis(100).await;
     }
 }
 
@@ -135,26 +175,52 @@ async fn receive_packet(mut rx: EspNowReceiver<'static>) {
     }
 }
 
+#[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn process_packet(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
     perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
+    topology: &'static Mutex<CriticalSectionRawMutex, Topology>,
 ) {
+    let mut fwd_buf = [0u8; 256];
     loop {
-        // Wakes the instant a packet is pushed onto the channel; drains as fast
-        // as packets arrive without the old fixed-interval polling.
-        let packet = RX_CHANNEL.receive().await;
-        let data: Result<HashMap<[u8; 6], State>, Error> =
-            postcard::from_bytes(&packet.data[..packet.len]);
-
+        let rx = RX_CHANNEL.receive().await;
         let start_cycles = cpu_cycles();
-        {
-            let mut node_state = state.lock().await;
-            let mac = node_state.mac; // own mac address
-            node_state.update_distance_from_self(mac, packet.src, packet.rssi);
-            let _ = data
-                .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
-                .inspect_err(|e| error!("Failed to update data: {}", defmt::Debug2Format(&e)));
+        match postcard::from_bytes::<Packet>(&rx.data[..rx.len]) {
+            Ok(Packet::Hello(distances)) => {
+                let mut node_state = state.lock().await;
+                let mac = node_state.mac;
+                node_state.update_distance_from_self(mac, rx.src, rx.rssi);
+                node_state.update_measurements_from_neighbor(rx.src, distances);
+            }
+            Ok(Packet::Tc(tc)) => {
+                {
+                    let mut node_state = state.lock().await;
+                    let mac = node_state.mac;
+                    node_state.update_distance_from_self(mac, rx.src, rx.rssi);
+                }
+                let forward = topology.lock().await.process_tc_message(
+                    tc.origin_mac,
+                    tc.neighbors.clone(),
+                    tc.sequence,
+                );
+                if forward {
+                    if let Ok(msg) = postcard::to_slice(&Packet::Tc(tc), &mut fwd_buf) {
+                        let len = msg.len();
+                        let mut data = [0u8; 256];
+                        data[..len].copy_from_slice(msg);
+                        if TX_CHANNEL
+                            .try_send(TxPacket { dst: BROADCAST, len, data })
+                            .is_err()
+                        {
+                            warn!("TC forward dropped: TX channel full");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to parse packet: {}", defmt::Debug2Format(&e));
+            }
         }
         let finish = cpu_cycles().wrapping_sub(start_cycles);
         {
@@ -176,14 +242,22 @@ async fn expire_stale_neighbors(state: &'static Mutex<CriticalSectionRawMutex, N
 async fn calculate_state(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
     perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
+    topology: &'static Mutex<CriticalSectionRawMutex, Topology>,
 ) {
     let mut mds = MDS::default();
     loop {
+        let estimates = {
+            let topo = topology.lock().await;
+            let node_state = state.lock().await;
+            routing::all_estimated_distances(&topo, &node_state.neighbours)
+        };
+        {
+            state.lock().await.update_estimated_distances(estimates);
+        }
+
         let (neighbour_dist, anchor) = {
             let node_state = state.lock().await;
             let dist = node_state.neighbour_matrix();
-            // Index of this device in the sorted-MAC ordering used by the matrix,
-            // so MDS can pin it at the origin.
             let anchor = node_state
                 .get_ordered_mac_addresses()
                 .iter()
@@ -248,7 +322,6 @@ async fn publish_metrics(perf: &'static Mutex<CriticalSectionRawMutex, Performan
 async fn main(spawner: embassy_executor::Spawner) {
     esp_alloc::heap_allocator!(size: HEAP_SIZE);
 
-    // Initialize HAL and RTOS
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -256,7 +329,6 @@ async fn main(spawner: embassy_executor::Spawner) {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    // Setup ESP-NOW
     let (mut wifi_controller, interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, Default::default()).unwrap();
     let mac = interfaces.station.mac_address();
@@ -319,14 +391,19 @@ async fn main(spawner: embassy_executor::Spawner) {
         None
     };
 
+    let topology: &'static Mutex<CriticalSectionRawMutex, Topology> =
+        TC_TOPOLOGY.init(Mutex::new(Topology::new(mac)));
+
     // Spawn tasks
-    spawner.spawn(broadcast_ping(tx, state, perf).unwrap());
+    spawner.spawn(tx_task(tx).unwrap());
+    spawner.spawn(broadcast_hello(state).unwrap());
+    spawner.spawn(broadcast_tc(state, topology).unwrap());
     spawner.spawn(receive_packet(rx).unwrap());
-    spawner.spawn(process_packet(state, perf).unwrap());
-    spawner.spawn(calculate_state(state, perf).unwrap());
+    spawner.spawn(process_packet(state, perf, topology).unwrap());
+    spawner.spawn(calculate_state(state, perf, topology).unwrap());
+    spawner.spawn(expire_stale_neighbors(state).unwrap());
     spawner.spawn(publish_metrics(perf).unwrap());
     spawner.spawn(update_screen(state, terminal).unwrap());
-    spawner.spawn(expire_stale_neighbors(state).unwrap());
 
     let topic = alloc::format!("telemetry/{ID}");
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];

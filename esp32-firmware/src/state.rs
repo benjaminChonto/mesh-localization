@@ -123,6 +123,7 @@ pub struct NodeState {
     pub mac: [u8; 6],
     pub neighbours: HashMap<[u8; 6], HashMap<[u8; 6], State>>,
     pub mds: MdsResult,
+    pub estimated_distances: HashMap<[u8; 6], f32>,
     last_seen: HashMap<[u8; 6], Instant>,
 }
 
@@ -132,6 +133,7 @@ impl NodeState {
             mac,
             neighbours: HashMap::new(),
             mds: Vec::default(),
+            estimated_distances: HashMap::new(),
             last_seen: HashMap::new(),
         };
         state.neighbours.insert(mac, HashMap::new());
@@ -180,6 +182,10 @@ impl NodeState {
         }
     }
 
+    pub fn update_estimated_distances(&mut self, estimates: HashMap<[u8; 6], f32>) {
+        self.estimated_distances = estimates;
+    }
+
     // method that updates the matrix of measurements that a node has of its neighbours
     pub fn update_measurements_from_neighbor(
         &mut self,
@@ -189,51 +195,80 @@ impl NodeState {
         self.neighbours.insert(mac, measurements);
     }
 
+    pub fn get_ordered_mac_addresses(&self) -> Vec<[u8; 6], MAX_SWARM_SIZE> {
+        let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
+        self.neighbours.keys().for_each(|&node| {
+            let _ = vec.push(node);
+        });
+        for &mac in self.estimated_distances.keys() {
+            if !vec.contains(&mac) {
+                let _ = vec.push(mac);
+            }
+        }
+        // Mac addresses are unique, so this is fine (more performant then regular sort)
+        vec.sort_unstable();
+        vec
+    }
+
     // method that generates adjacency matrix to be used for MDS
     pub fn neighbour_matrix(&self) -> Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
         let vec = self.get_ordered_mac_addresses();
+        let own_mac = self.mac;
         vec.iter()
             .map(|node| {
-                let neighbours = &self.neighbours[node];
+                let direct = self.neighbours.get(node);
                 vec.iter()
                     .map(|n| {
-                        neighbours
-                            .get(n)
+                        direct
+                            .and_then(|nbrs| nbrs.get(n))
                             .map(|state| state.dist)
-                            .unwrap_or_else(|| if node == n { I16F16::ZERO } else { I16F16::MAX })
+                            .unwrap_or_else(|| {
+                                if node == n {
+                                    I16F16::ZERO
+                                } else if *node == own_mac {
+                                    self.estimated_distances.get(n).copied().map(I16F16::from_num).unwrap_or(I16F16::MAX)
+                                } else if *n == own_mac {
+                                    self.estimated_distances.get(node).copied().map(I16F16::from_num).unwrap_or(I16F16::MAX)
+                                } else {
+                                    self.neighbours
+                                        .get(n)
+                                        .and_then(|nbrs| nbrs.get(node))
+                                        .map(|s| s.dist)
+                                        .unwrap_or(I16F16::MAX)
+                                }
+                            })
                     })
                     .collect()
             })
             .collect()
     }
 
-    pub fn get_ordered_mac_addresses(&self) -> Vec<[u8; 6], MAX_SWARM_SIZE> {
-        let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
-        self.neighbours.keys().for_each(|&node| {
-            let _ = vec.push(node);
-        });
-        // Mac addresses are unique, so this is fine (more performant then regular sort)
-        vec.sort_unstable();
-        vec
-    }
-
     pub fn get_ordered_distances(&self) -> Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> {
-        let mut vec: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
-        self.neighbours.keys().for_each(|&node| {
-            let _ = vec.push(node);
-        });
-        // Mac addresses are unique, so this is fine (more performant then regular sort)
-        vec.sort_unstable();
-
+        let vec = self.get_ordered_mac_addresses();
+        let own_mac = self.mac;
         vec.iter()
             .map(|node| {
-                let neighbours = &self.neighbours[node];
+                let direct = self.neighbours.get(node);
                 vec.iter()
                     .map(|n| {
-                        neighbours
-                            .get(n)
+                        direct
+                            .and_then(|nbrs| nbrs.get(n))
                             .map(|state| state.dist)
-                            .unwrap_or_else(|| if node == n { I16F16::ZERO } else { I16F16::MAX })
+                            .unwrap_or_else(|| {
+                                if node == n {
+                                    I16F16::ZERO
+                                } else if *node == own_mac {
+                                    self.estimated_distances.get(n).copied().map(I16F16::from_num).unwrap_or(I16F16::MAX)
+                                } else if *n == own_mac {
+                                    self.estimated_distances.get(node).copied().map(I16F16::from_num).unwrap_or(I16F16::MAX)
+                                } else {
+                                    self.neighbours
+                                        .get(n)
+                                        .and_then(|nbrs| nbrs.get(node))
+                                        .map(|s| s.dist)
+                                        .unwrap_or(I16F16::MAX)
+                                }
+                            })
                     })
                     .collect()
             })

@@ -6,6 +6,7 @@ pub mod kabsch;
     reason = "we're using the same variable names as the paper"
 )]
 pub mod mds;
+pub mod routing;
 pub mod screen;
 pub mod state;
 pub mod topology;
