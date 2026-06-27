@@ -180,6 +180,10 @@ impl NodeState {
             self.neighbours.remove(mac);
             self.last_seen.remove(mac);
         }
+
+        if !expired.is_empty() {
+            self.mds.clear();
+        }
     }
 
     pub fn update_estimated_distances(&mut self, estimates: HashMap<[u8; 6], f32>) {

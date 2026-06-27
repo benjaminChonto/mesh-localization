@@ -135,7 +135,9 @@ async fn broadcast_tc(
                 .unwrap_or_default()
         };
 
-        let tc = topology.lock().await.generate_tc_message(neighbors);
+        let mut topo = topology.lock().await;
+        topo.expire_stale();
+        let tc = topo.generate_tc_message(neighbors);
         let packet = Packet::Tc(tc);
 
         if let Ok(msg) = postcard::to_slice(&packet, &mut buf) {
@@ -437,8 +439,10 @@ async fn main(spawner: embassy_executor::Spawner) {
 
         loop {
             led.toggle();
-            // The display is rendered by the `update_screen` task; here we just log
-            // the current state for debugging.
+            {
+                let topo = topology.lock().await;
+                info!("topology:\n{}", defmt::Debug2Format(topo.topology_table()));
+            }
             {
                 let node_state = state.lock().await;
                 info!(

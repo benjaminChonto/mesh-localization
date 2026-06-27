@@ -96,7 +96,7 @@ impl Topology {
             .insert(mac, (neighbors, sequence, Instant::now()));
     }
 
-    fn expire_stale(&mut self) {
+    pub fn expire_stale(&mut self) {
         let now = Instant::now();
         self.topology_table.retain(|_, (_, _, timestamp)| {
             now.duration_since(*timestamp).as_secs() < NEIGHBOR_EXPIRY
