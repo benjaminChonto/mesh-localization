@@ -73,7 +73,7 @@ pub fn dijkstra_rssi(
                 if visited.contains(&neighbor) {
                     continue;
                 }
-                let new_dist = dist.get(&current).copied().unwrap_or(f32::INFINITY) + state.dist;
+                let new_dist = dist.get(&current).copied().unwrap_or(f32::INFINITY) + state.dist.to_num::<f32>();
                 if new_dist < *dist.get(&neighbor).unwrap_or(&f32::INFINITY) {
                     dist.insert(neighbor, new_dist);
                     prev.insert(neighbor, Some(current));
@@ -102,7 +102,7 @@ pub fn dijkstra_rssi(
         let ema = neighbours
             .get(&path[i])
             .and_then(|adj| adj.get(&path[i + 1]))
-            .map(|s| s.ema_rssi)
+            .map(|s| s.ema_rssi.to_num::<f32>())
             .unwrap_or(f32::NEG_INFINITY);
         let _ = rssi_hops.push(ema);
     }
@@ -152,7 +152,7 @@ pub fn all_estimated_distances(
                 if visited.contains(&neighbor) {
                     continue;
                 }
-                let new_dist = dist.get(&current).copied().unwrap_or(f32::INFINITY) + state.dist;
+                let new_dist = dist.get(&current).copied().unwrap_or(f32::INFINITY) + state.dist.to_num::<f32>();
                 if new_dist < *dist.get(&neighbor).unwrap_or(&f32::INFINITY) {
                     dist.insert(neighbor, new_dist);
                 }

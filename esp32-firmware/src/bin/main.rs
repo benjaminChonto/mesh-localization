@@ -26,13 +26,12 @@ use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::routing;
 use esp32_firmware::screen;
-use esp32_firmware::state::{NodeState, State};
+use esp32_firmware::state::NodeState;
 use esp32_firmware::topology::{Packet, Topology};
 use esp32_firmware::utils::{
     ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, RX_CHANNEL_SIZE, TX_CHANNEL_SIZE, cpu_cycles,
 };
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
-use hashbrown::HashMap;
 use heapless::Vec;
 use minimq::{Buffers, ConfigBuilder, Publication, Session};
 use shared::{I16F16, PerformanceMetrics, TelemetryMessage};
@@ -101,17 +100,21 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
             let node_state = state.lock().await;
             node_state.neighbours.get(&node_state.mac).cloned()
         };
-        let finish = cpu_cycles().wrapping_sub(start_cycles);
+        let _finish = cpu_cycles().wrapping_sub(start_cycles);
 
         let packet = Packet::Hello(distances.unwrap_or_default());
         let mut data = [0u8; 256];
         // Extract length first so the &mut borrow on data is dropped before we move data.
         if let Ok(len) = postcard::to_slice(&packet, &mut data).map(|s| s.len())
             && TX_CHANNEL
-                .try_send(TxPacket { dst: BROADCAST, len, data })
+                .try_send(TxPacket {
+                    dst: BROADCAST,
+                    len,
+                    data,
+                })
                 .is_err()
         {
-            log::warn!("Hello dropped: TX channel full");
+            warn!("Hello dropped: TX channel full");
         }
 
         Timer::after_millis(1000).await;
@@ -147,10 +150,14 @@ async fn broadcast_tc(
         let mut data = [0u8; 256];
         if let Ok(len) = postcard::to_slice(&packet, &mut data).map(|s| s.len())
             && TX_CHANNEL
-                .try_send(TxPacket { dst: BROADCAST, len, data })
+                .try_send(TxPacket {
+                    dst: BROADCAST,
+                    len,
+                    data,
+                })
                 .is_err()
         {
-            log::warn!("TC dropped: TX channel full");
+            warn!("TC dropped: TX channel full");
         }
     }
 }
@@ -213,21 +220,21 @@ async fn process_packet(
                     tc.sequence,
                 );
 
-                if forward {
-                    if let Ok(msg) = postcard::to_slice(&Packet::Tc(tc), &mut fwd_buf) {
-                        let len = msg.len();
-                        let mut data = [0u8; 256];
-                        data[..len].copy_from_slice(msg);
-                        if TX_CHANNEL
-                            .try_send(TxPacket {
-                                dst: BROADCAST,
-                                len,
-                                data,
-                            })
-                            .is_err()
-                        {
-                            warn!("TC forward dropped: TX channel full");
-                        }
+                if forward
+                    && let Ok(msg) = postcard::to_slice(&Packet::Tc(tc), &mut fwd_buf)
+                {
+                    let len = msg.len();
+                    let mut data = [0u8; 256];
+                    data[..len].copy_from_slice(msg);
+                    if TX_CHANNEL
+                        .try_send(TxPacket {
+                            dst: BROADCAST,
+                            len,
+                            data,
+                        })
+                        .is_err()
+                    {
+                        warn!("TC forward dropped: TX channel full");
                     }
                 }
             }
@@ -242,6 +249,7 @@ async fn process_packet(
     }
 }
 
+#[embassy_executor::task]
 async fn expire_stale_neighbors(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
     loop {
         Timer::after_secs(1).await;
@@ -322,7 +330,7 @@ async fn update_screen(
 #[embassy_executor::task]
 async fn publish_metrics(perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>) {
     loop {
-        let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Perf(perf.lock().await.clone()));
+        let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Perf(*perf.lock().await));
         Timer::after_millis(50).await;
     }
 }
@@ -420,6 +428,7 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let topic = alloc::format!("telemetry/{ID}");
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];
+    #[allow(clippy::never_loop)]
     loop {
         // TODO why do we have this extra outer loop? why do we need to open a new mqtt session
         // every time?

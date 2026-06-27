@@ -77,9 +77,7 @@ impl Topology {
         self.own_mac
     }
 
-    pub fn topology_table(
-        &self,
-    ) -> &HashMap<[u8; 6], TopologyEntry> {
+    pub fn topology_table(&self) -> &HashMap<[u8; 6], TopologyEntry> {
         &self.topology_table
     }
 
