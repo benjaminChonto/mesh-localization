@@ -29,8 +29,8 @@ use esp32_firmware::screen;
 use esp32_firmware::state::NodeState;
 use esp32_firmware::topology::{Packet, Topology};
 use esp32_firmware::utils::{
-    DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, TX_CHANNEL_SIZE, RX_CHANNEL_SIZE,
-    NETWORK_RETRIES, SEND_TELEMETRY, cpu_cycles,
+    DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, NETWORK_RETRIES,
+    RX_CHANNEL_SIZE, SEND_TELEMETRY, TX_CHANNEL_SIZE, cpu_cycles,
 };
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use heapless::Vec;
