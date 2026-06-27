@@ -17,11 +17,11 @@ use embassy_sync::mutex::Mutex;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
+use esp_hal::Blocking;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::timer::timg::TimerGroup;
-use esp_hal::Blocking;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::screen;
@@ -206,6 +206,7 @@ async fn calculate_state(
     }
 }
 
+#[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn update_screen(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
