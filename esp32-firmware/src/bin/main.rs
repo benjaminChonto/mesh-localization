@@ -13,7 +13,7 @@ use defmt::{error, info, warn};
 use defmt_rtt as _;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
-use embassy_sync::mutex::Mutex;
+use embassy_sync::mutex::{Mutex, MutexGuard};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
@@ -213,15 +213,13 @@ async fn update_screen(
     mut terminal: Option<screen::ScreenTerminal<'static, I2c<'static, Blocking>>>,
 ) {
     loop {
-        let (mds, macs, distances, id) = {
-            let node_state = state.lock().await;
-            (
-                node_state.mds.clone(),
-                node_state.get_ordered_mac_addresses(),
-                node_state.get_ordered_distances(),
-                node_state.mac,
-            )
-        };
+        let node_state = state.lock().await;
+        let mds = node_state.mds.clone();
+        let macs = node_state.get_ordered_mac_addresses();
+        let distances = node_state.get_ordered_distances();
+        let id = node_state.mac;
+        drop(node_state);
+
         if let Some(ref mut terminal) = terminal {
             screen::render_mds(terminal, &macs, &distances, &mds, &id);
         }
