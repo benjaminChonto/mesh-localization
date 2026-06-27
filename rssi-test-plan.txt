@@ -1,0 +1,97 @@
+RSSI -> DISTANCE PARAMETER TUNING PLAN
+======================================
+
+Parameters to tune (two independent groups, tuned in order):
+
+  1. RSSI -> distance calibration (do this FIRST, everything else depends on it)
+     - N            path-loss exponent
+     - A            reference RSSI at 1m
+  2. Smoothing / spike filter (state.rs)
+     - alpha        EMA coefficient
+     - window size  spike-reference window
+     - threshold    spike clamp boundary (dB)
+
+==========================================================================
+PART 1 -- CALIBRATION (N and A)
+==========================================================================
+
+Measure
+  - 2 nodes only, in a straight line.
+  - Two environments: inside (library, obstacles) and outside (open).
+  - At every meter from 1 to 15.
+  - ~30s per distance (~600 raw samples).
+  - Set RSSI_LOG_LABEL to the distance for each run, e.g. RSSI_LOG_LABEL=3m.
+  - Keep node orientation / height constant across distances.
+  - Direction asymmetry: RSSI A->B != B->A (per-board TX power / antenna).
+    Stay consistent about which node receives, or average both directions.
+    (Logging the src MAC would let us separate links offline.)
+
+Analyze
+  - Per distance: mean and std of raw RSSI.
+      mean -> the calibration data points
+      std  -> noise size, and the floor for the spike threshold (Part 2)
+  - Fit A and N TOGETHER with one linear regression, per environment:
+        RSSI = A - 10*N*log10(d)
+      -> A = intercept (value at d = 1)
+      -> slope = -10*N
+    Fit in RSSI-vs-log10(d) space (NOT distance space: a fixed RSSI error
+    blows up into huge metres at 10-15m and would dominate the fit).
+
+==========================================================================
+PART 2 -- SMOOTHING & SPIKE FILTER (alpha, window, threshold)
+==========================================================================
+
+N and A are now FIXED. They are not part of this sweep.
+
+2a. Static jitter (precision) -- from the Part 1 static logs
+  - For each (alpha, window): run the filter over a stationary segment,
+    discard a warmup prefix, then compute std of the FILTERED output
+    (convert to metres for an intuitive number).
+  - The data is stationary, so std-over-time IS the jitter metric. Do not
+    bucket by N samples or map over time here.
+  - Expect monotonic diminishing returns: std ~ 1/sqrt(N_eff). On static
+    data alone "more smoothing" always looks better -- the optimum is bounded
+    only by responsiveness (2c). EMA<->window equivalence: N_eff = (2-a)/a.
+
+2b. Spike threshold -- needs TWO bounds, then sweep between them
+  - Lower bound: from static std. Reject excursions beyond ~3*sigma of the
+    static noise.
+  - Upper bound: from the LARGEST legitimate consecutive delta seen during
+    motion (from the staircase run, 2d). The clamp must not eat real movement.
+  - Sweep threshold between those bounds.
+  - If static spikes and motion deltas overlap, record it: the
+    clamp-toward-mean design has a hard ceiling in that regime.
+
+2c. Responsiveness -- synthetic data (primary sweep)
+  - Generate trajectories from the Part 1 model: pick d(t) (e.g. ramp
+    1m -> 10m), at each 100ms step take the model RSSI for d(t) via the log
+    formula, add noise drawn from the static residuals, inject spikes drawn
+    from the static spike stats.
+  - Ground truth is exact (we defined d(t)) -> no timestamping needed.
+  - For each (alpha, window, threshold): replay and compute tracking RMSE
+    vs d(t). This folds jitter + lag into one number with a real finite
+    minimum. Also report settling time: iterations for the output to reach
+    within X% of a new level after a step.
+  - Caveat: synthetic-from-static UNDER-represents motion fast-fading and
+    cannot create motion-induced spikes -> treat results as optimistic;
+    validate with 2d.
+
+2d. Responsiveness -- one real run per environment (validation + motion spikes)
+  - Stop-and-go staircase: walk to 1m, HOLD ~5s, walk to next metre, HOLD,
+    ... up the range. Press a key at every stop/start to write a waypoint
+    marker (shares the sample clock) -- coarse timing is fine, plateaus are
+    seconds long. (Add keypress-marker logging to mesh-ui to enable this.)
+  - Plateaus -> real jitter and real spike stats at a KNOWN distance.
+  - Transitions -> tracking lag. Measure it INTRINSICALLY: time from the raw
+    RSSI level shift to when the filtered output settles -- no external
+    ground truth needed for the lag itself. External truth (the plateaus)
+    only checks the steady-state distance is correct.
+  - Record the largest legitimate consecutive delta here -> feeds 2b upper bound.
+
+2e. Pick parameters
+  - alpha: minimize tracking RMSE on the synthetic sweep, confirm on 2d.
+  - threshold: smallest value (within 2b bounds) that rejects static spikes
+    without clipping motion deltas.
+  - window: stability of the spike reference (not smoothness).
+  - If nodes move a lot, do NOT over-smooth past the RMSE minimum -- jitter
+    reduction past that point is paid for in tracking error.

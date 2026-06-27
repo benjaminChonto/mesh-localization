@@ -15,6 +15,7 @@ pub enum TelemetryMessage<'a> {
     Log { msg: &'a str },
     Mds(MdsResult),
     Perf(PerformanceMetrics),
+    Rssi { src: [u8; 6], rssi: i8 },
 }
 
 /// Per-task timings measured in raw CPU cycles (read from the RISC-V `mcycle` CSR).

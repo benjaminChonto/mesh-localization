@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    env,
     fs::{self, File},
     io::{self, BufWriter, Write},
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -165,7 +166,92 @@ impl PerfCsvLogger {
     }
 }
 
-fn read_mqtt(tx: &Sender<UiEvent>) {
+/// Appends every received RSSI sample to a CSV file so the RSSI->distance model
+/// can be tuned offline (path-loss exponent `N`, reference RSSI at 1m, smoothing
+/// window size, EMA coefficient, spike thresholds). Raw, unfiltered samples are
+/// logged on purpose: all filtering is replayed/varied offline, so nothing is
+/// baked in here.
+///
+/// The file name embeds the label from the `RSSI_LOG_LABEL` env var (set it to
+/// the ground-truth distance, e.g. `1m`, `5m`, `10m`) so a run in each condition
+/// lands in a clearly named file. The label is also written as a column, so
+/// files can be concatenated for analysis without losing the distance.
+///
+/// Waypoint markers (keypresses) go into the same file as `kind=marker` rows
+/// sharing the `unix_ms` clock, so a stop-and-go staircase run can be aligned to
+/// the samples offline (filter by `kind`) without precise per-sample timing.
+struct RssiCsvLogger {
+    writer: BufWriter<File>,
+    path: String,
+    label: String,
+    count: u64,
+    marker_count: u64,
+}
+
+impl RssiCsvLogger {
+    fn new() -> io::Result<Self> {
+        let dir = env::var("RSSI_LOG_DIR").unwrap_or_else(|_| "logs".to_string());
+        let label = env::var("RSSI_LOG_LABEL").unwrap_or_else(|_| "unlabeled".to_string());
+        fs::create_dir_all(&dir)?;
+        let path = format!("{dir}/rssi-{label}-{}.csv", unix_millis());
+
+        let mut writer = BufWriter::new(File::create(&path)?);
+        // `kind` is `sample` or `marker`; sample rows fill src/rssi, marker rows
+        // fill marker_index. label is constant per file but kept for concat.
+        writeln!(writer, "unix_ms,kind,node_id,src,label,rssi,marker_index")?;
+        writer.flush()?;
+
+        Ok(Self {
+            writer,
+            path,
+            label,
+            count: 0,
+            marker_count: 0,
+        })
+    }
+
+    fn log(&mut self, node_id: &str, src: [u8; 6], rssi: i8) -> io::Result<()> {
+        self.count += 1;
+        // sample row: marker_index column left empty.
+        writeln!(
+            self.writer,
+            "{},sample,{},{},{},{},",
+            unix_millis(),
+            node_id,
+            mac_str(src),
+            self.label,
+            rssi
+        )?;
+        // Flush every row: samples arrive slowly and we don't want to lose data
+        // if the UI is killed with Ctrl-C mid-run.
+        self.writer.flush()
+    }
+
+    /// Record a waypoint marker at the current time; returns its index.
+    fn mark(&mut self) -> io::Result<u64> {
+        self.marker_count += 1;
+        // marker row: node_id/src/rssi columns left empty.
+        writeln!(
+            self.writer,
+            "{},marker,,,{},,{}",
+            unix_millis(),
+            self.label,
+            self.marker_count
+        )?;
+        self.writer.flush()?;
+        Ok(self.marker_count)
+    }
+}
+
+/// Lowercase colon-separated MAC, e.g. `aa:bb:cc:dd:ee:ff`.
+fn mac_str(mac: [u8; 6]) -> String {
+    mac.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+fn read_mqtt(tx: &Sender<UiEvent>, marker_rx: &Receiver<()>) {
     let mqtt_opt = MqttOptions::new("mesh-ui", "localhost", 1883);
     let (client, mut connection) = Client::new(mqtt_opt, 10);
     if let Err(e) = client.subscribe("telemetry/+", QoS::AtLeastOnce) {
@@ -185,7 +271,39 @@ fn read_mqtt(tx: &Sender<UiEvent>) {
         }
     };
 
+    // Best-effort CSV logging of raw RSSI samples for offline model tuning.
+    let mut rssi_logger = match RssiCsvLogger::new() {
+        Ok(logger) => {
+            let _ = tx.send(UiEvent::Error(format!(
+                "Logging RSSI [{}] to {}",
+                logger.label, logger.path
+            )));
+            Some(logger)
+        }
+        Err(e) => {
+            let _ = tx.send(UiEvent::Error(format!("Could not open RSSI CSV log: {e}")));
+            None
+        }
+    };
+
     for event in connection.iter() {
+        // Drain any waypoint keypresses queued by the UI thread. The MQTT
+        // iterator blocks between packets, so markers land on the next sample
+        // (~50ms) — fine for coarse stop-and-go boundaries.
+        while marker_rx.try_recv().is_ok() {
+            if let Some(logger) = rssi_logger.as_mut() {
+                match logger.mark() {
+                    Ok(idx) => {
+                        let _ = tx.send(UiEvent::Error(format!(
+                            "Marker {idx} -> {}",
+                            logger.path
+                        )));
+                    }
+                    Err(e) => eprintln!("marker write failed: {e}"),
+                }
+            }
+        }
+
         match event {
             Ok(Event::Incoming(Incoming::Publish(packet))) => {
                 let node_id = packet.topic.split('/').nth(1).unwrap_or("?").to_string();
@@ -201,6 +319,20 @@ fn read_mqtt(tx: &Sender<UiEvent>) {
                             eprintln!("perf CSV write failed: {e}");
                         }
                         let _ = tx.send(UiEvent::Perf { node_id, metrics });
+                    }
+                    Ok(TelemetryMessage::Rssi { src, rssi }) => {
+                        if let Some(logger) = rssi_logger.as_mut() {
+                            if let Err(e) = logger.log(&node_id, src, rssi) {
+                                eprintln!("RSSI CSV write failed: {e}");
+                            }
+                            let _ = tx.send(UiEvent::Error(format!(
+                                "RSSI [{}] {}<-{} n={} last={rssi}dBm | space=marker q=quit",
+                                logger.label,
+                                node_id,
+                                mac_str(src),
+                                logger.count
+                            )));
+                        }
                     }
                     Ok(TelemetryMessage::Log { .. }) => {}
                     Err(e) => {
@@ -221,13 +353,21 @@ fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || read_mqtt(&tx));
+    // UI thread -> logging thread: a unit per waypoint keypress.
+    let (marker_tx, marker_rx) = mpsc::channel::<()>();
+    thread::spawn(move || read_mqtt(&tx, &marker_rx));
 
-    ratatui::run(|terminal| app(terminal, &rx))?;
+    ratatui::run(|terminal| app(terminal, &rx, &marker_tx))?;
     Ok(())
 }
 
-fn app(terminal: &mut DefaultTerminal, rx: &Receiver<UiEvent>) -> std::io::Result<()> {
+fn app(
+    terminal: &mut DefaultTerminal,
+    rx: &Receiver<UiEvent>,
+    marker_tx: &Sender<()>,
+) -> std::io::Result<()> {
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+
     let mut state = AppState::new();
 
     loop {
@@ -239,10 +379,18 @@ fn app(terminal: &mut DefaultTerminal, rx: &Receiver<UiEvent>) -> std::io::Resul
 
         terminal.draw(|frame| render(frame, &state))?;
 
-        if crossterm::event::poll(Duration::from_millis(0))?
-            && crossterm::event::read()?.is_key_press()
+        if event::poll(Duration::from_millis(0))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
         {
-            break Ok(());
+            match key.code {
+                // q / Esc quit; space / m drop a waypoint marker into the log.
+                KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
+                KeyCode::Char(' ') | KeyCode::Char('m') => {
+                    let _ = marker_tx.send(());
+                }
+                _ => {}
+            }
         }
     }
 }

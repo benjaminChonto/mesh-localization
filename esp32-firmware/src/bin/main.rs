@@ -75,20 +75,9 @@ async fn broadcast_ping(
     let mut serializer_buff = [0u8; DISTANCE_MAP_MAX_SIZE];
 
     loop {
-        // Measure in raw CPU cycles for maximum precision (see `cpu_cycles`).
-        let start_cycles = cpu_cycles();
-        let mut distances: Option<HashMap<[u8; 6], State>> = None;
-        {
-            distances = {
-                // mac addr-> 6 * 10 * 4
-                let node_state = state.lock().await;
-                node_state.neighbours.get(&node_state.mac).cloned()
-            };
-        }
-        let finish = cpu_cycles().wrapping_sub(start_cycles);
+        let garbage: [u8; 5] = [0, 0, 0, 0, 0];
 
-        let Ok(msg) = postcard::to_slice(&distances.unwrap_or_default(), &mut serializer_buff)
-        else {
+        let Ok(msg) = postcard::to_slice(&garbage, &mut serializer_buff) else {
             warn!("broadcast_ping: serializer buffer too small, skipping");
             Timer::after_millis(500).await;
             continue;
@@ -102,19 +91,14 @@ async fn broadcast_ping(
                 warn!("Could not send message {:?}", e);
             }
         }
-        {
-            perf.lock().await.broadcast_clone_dist_cycles = finish;
-        }
         Timer::after_millis(100).await;
     }
 }
 
-// TODO idk if this will overflow
 #[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn receive_packet(mut rx: EspNowReceiver<'static>) {
     loop {
-        // Park the task until the ESP-NOW RX interrupt wakes us (no polling).
         let packet = rx.receive_async().await;
         let rssi = packet.info.rx_control.rssi as i8;
         let src = packet.info.src_address;
@@ -122,116 +106,7 @@ async fn receive_packet(mut rx: EspNowReceiver<'static>) {
         let payload = packet.data();
         let len = payload.len().min(256);
 
-        // copy to pass ownership
-        let mut data = [0u8; 256];
-        data[..len].copy_from_slice(&payload[..len]);
-
-        let _ = RX_CHANNEL
-            .send(RxPacket {
-                src,
-                rssi,
-                len,
-                data,
-            })
-            .await; // yield if channel is full
-    }
-}
-
-#[embassy_executor::task]
-async fn process_packet(
-    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
-    perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
-) {
-    loop {
-        // Wakes the instant a packet is pushed onto the channel; drains as fast
-        // as packets arrive without the old fixed-interval polling.
-        let packet = RX_CHANNEL.receive().await;
-        let data: Result<HashMap<[u8; 6], State>, Error> =
-            postcard::from_bytes(&packet.data[..packet.len]);
-
-        let start_cycles = cpu_cycles();
-        {
-            let mut node_state = state.lock().await;
-            let mac = node_state.mac; // own mac address
-            node_state.update_distance_from_self(mac, packet.src, packet.rssi);
-            let _ = data
-                .map(|d| node_state.update_measurements_from_neighbor(packet.src, d))
-                .inspect_err(|e| error!("Failed to update data: {}", defmt::Debug2Format(&e)));
-        }
-        let finish = cpu_cycles().wrapping_sub(start_cycles);
-        {
-            perf.lock().await.process_packet_cycles = finish;
-        }
-    }
-}
-
-// TODO idk if this will overflow
-#[allow(clippy::large_stack_frames)]
-#[embassy_executor::task]
-async fn calculate_state(
-    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
-    perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
-) {
-    let mut mds = MDS::default();
-    loop {
-        let (neighbour_dist, anchor) = {
-            let node_state = state.lock().await;
-            let dist = node_state.neighbour_matrix();
-            // Index of this device in the sorted-MAC ordering used by the matrix,
-            // so MDS can pin it at the origin.
-            let anchor = node_state
-                .get_ordered_mac_addresses()
-                .iter()
-                .position(|&mac| mac == node_state.mac);
-            (dist, anchor)
-        };
-        if neighbour_dist.iter().any(|row| row.contains(&I16F16::MAX)) {
-            // Neighbour matrix is incomplete
-            Timer::after_millis(5000).await;
-            continue;
-        }
-
-        // WATCH OUT mds yields, these timings not accurate
-        let start_cycles = cpu_cycles();
-        let mds = mds.compute(neighbour_dist, anchor).await;
-        let finish = cpu_cycles().wrapping_sub(start_cycles);
-        {
-            state.lock().await.mds = mds.clone(); // TODO the clone might be expensive
-            // double clone :(
-            // but publish state when available
-            let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(state.lock().await.mds.clone()));
-            perf.lock().await.calculate_state_cycles = finish;
-        }
-        Timer::after_millis(100).await;
-    }
-}
-
-#[allow(clippy::large_stack_frames)]
-#[embassy_executor::task]
-async fn update_screen(
-    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
-    mut terminal: Option<screen::ScreenTerminal<'static, I2c<'static, Blocking>>>,
-) {
-    loop {
-        let node_state = state.lock().await;
-        let mds = node_state.mds.clone();
-        let macs = node_state.get_ordered_mac_addresses();
-        let distances = node_state.get_ordered_distances();
-        let id = node_state.mac;
-        drop(node_state);
-
-        if let Some(ref mut terminal) = terminal {
-            screen::render_mds(terminal, &macs, &distances, &mds, &id);
-        }
-        Timer::after_millis(300).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn publish_metrics(perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>) {
-    loop {
-        let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Perf(perf.lock().await.clone()));
-        Timer::after_millis(50).await;
+        MQTT_TX_CHANNEL.try_send(TelemetryMessage::Rssi { src, rssi });
     }
 }
 
@@ -290,14 +165,6 @@ async fn main(spawner: embassy_executor::Spawner) {
         .with_sda(peripherals.GPIO0)
         .with_scl(peripherals.GPIO1);
 
-    let display = match screen::init(i2c) {
-        Ok(d) => Some(DISPLAY.init(d)),
-        Err(e) => {
-            info!("Failed to initialize display: {}", defmt::Debug2Format(&e));
-            None
-        }
-    };
-
     let state: &'static Mutex<CriticalSectionRawMutex, NodeState> =
         STATE.init(Mutex::new(NodeState::new(mac)));
 
@@ -306,21 +173,9 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let (_, tx, rx) = esp_now.split();
 
-    let terminal = if let Some(display) = display {
-        info!("Display initialized");
-        screen::init_terminal(display).ok()
-    } else {
-        info!("Running without display");
-        None
-    };
-
     // Spawn tasks
     spawner.spawn(broadcast_ping(tx, state, perf).unwrap());
     spawner.spawn(receive_packet(rx).unwrap());
-    spawner.spawn(process_packet(state, perf).unwrap());
-    spawner.spawn(calculate_state(state, perf).unwrap());
-    spawner.spawn(publish_metrics(perf).unwrap());
-    spawner.spawn(update_screen(state, terminal).unwrap());
 
     let topic = alloc::format!("telemetry/{ID}");
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];

@@ -108,7 +108,7 @@ impl State {
             raw
         };
 
-        self.window.push(raw);
+        self.window.push(filtered);
         self.ema_rssi = EMA_ALPHA * filtered + ONE_MINUS_EMA * self.ema_rssi;
         // Truncate smoothed RSSI to integer for lookup (floor toward -∞)
         let ema_int = (self.ema_rssi.to_bits() >> 16).clamp(-128, 127) as i8;
