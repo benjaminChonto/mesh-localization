@@ -5,6 +5,10 @@ pub const ID: &str = match option_env!("ID") {
     Some(v) => v,
     None => "0",
 };
+pub const SEND_TELEMETRY: bool = match option_env!("SEND_TELEMETRY") {
+    Some(v) => true,
+    None => false,
+};
 
 // 2 x 10 matrix of f32 (4bytes) + 11 bytes type information = 91 bytes
 pub const MDS_MAX_SIZE: usize = 128;
@@ -12,6 +16,9 @@ pub const MDS_MAX_SIZE: usize = 128;
 pub const DISTANCE_MAP_MAX_SIZE: usize = 250;
 pub const RX_CHANNEL_SIZE: usize = 256;
 pub const MQTT_TX_CHANNEL_SIZE: usize = 256;
+
+// Number of times we try to connect to a hotspot
+pub const NETWORK_RETRIES: usize = 5;
 
 /// Raw CPU cycle counter for the ESP32-C3.
 /// It is 32-bit and wraps every

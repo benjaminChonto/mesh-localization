@@ -27,7 +27,8 @@ use esp32_firmware::mds::MDS;
 use esp32_firmware::screen;
 use esp32_firmware::state::{NodeState, State};
 use esp32_firmware::utils::{
-    DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, RX_CHANNEL_SIZE, cpu_cycles,
+    DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, RX_CHANNEL_SIZE,
+    NETWORK_RETRIES, SEND_TELEMETRY, cpu_cycles,
 };
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use hashbrown::HashMap;
@@ -257,28 +258,52 @@ async fn main(spawner: embassy_executor::Spawner) {
     let mac = interfaces.station.mac_address();
     info!("Device MAC address {:?}", mac);
 
-    wifi_controller
-        .set_config(&esp_radio::wifi::Config::Station(
-            esp_radio::wifi::sta::StationConfig::default()
-                .with_ssid(WIFI_SSID)
-                .with_password(WIFI_PASS.into()),
-        ))
-        .unwrap();
-    info!("Connecting to '{}'…", WIFI_SSID);
-    while let Err(e) = wifi_controller.connect_async().await {
-        error!("WiFi connect failed ({:?}), retrying in 5s…", e);
-        Timer::after(Duration::from_secs(5)).await;
-    }
-    info!("Associated with '{}'", WIFI_SSID);
+    let mut network_connection_failed = false;
+    let mut mqtt_enabled = SEND_TELEMETRY;
+    let mut mqtt_stack = None;
 
-    let (stack, runner) = embassy_net::new(
-        interfaces.station,
-        Config::dhcpv4(Default::default()),
-        STACK_RESOURCES.init(StackResources::new()),
-        u64::from(esp_hal::rng::Rng::new().random()),
-    );
-    spawner.spawn(net_task(runner).unwrap());
-    stack.wait_config_up().await;
+    if SEND_TELEMETRY {
+        wifi_controller
+            .set_config(&esp_radio::wifi::Config::Station(
+                esp_radio::wifi::sta::StationConfig::default()
+                    .with_ssid(WIFI_SSID)
+                    .with_password(WIFI_PASS.into()),
+            ))
+            .unwrap();
+        info!("Connecting to '{}'…", WIFI_SSID);
+        let mut connection_retries = 0;
+        while let Err(e) = wifi_controller.connect_async().await {
+            if connection_retries > NETWORK_RETRIES {
+                error!("WiFi connection retries exhausted");
+                network_connection_failed = true;
+                break;
+            }
+            error!("WiFi connect failed ({:?}), retrying in 5s…", e);
+            connection_retries += 1;
+            Timer::after(Duration::from_secs(5)).await;
+        }
+
+        if !network_connection_failed {
+            info!("Associated with '{}'", WIFI_SSID);
+
+            let (stack, runner) = embassy_net::new(
+                interfaces.station,
+                Config::dhcpv4(Default::default()),
+                STACK_RESOURCES.init(StackResources::new()),
+                u64::from(esp_hal::rng::Rng::new().random()),
+            );
+            spawner.spawn(net_task(runner).unwrap());
+            stack.wait_config_up().await;
+            mqtt_stack = Some(stack);
+        } else {
+            mqtt_enabled = false;
+            info!("WiFi connection failed; skipping MQTT setup");
+        }
+    } else {
+        info!("Telemetry disabled; skipping WiFi and MQTT setup");
+        mqtt_enabled = false;
+    }
+
     let esp_now = interfaces.esp_now;
 
     // On board status led
@@ -322,40 +347,81 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(publish_metrics(perf).unwrap());
     spawner.spawn(update_screen(state, terminal).unwrap());
 
-    let topic = alloc::format!("telemetry/{ID}");
-    let mut serializer_buff = [0u8; MDS_MAX_SIZE];
-    loop {
-        // TODO why do we have this extra outer loop? why do we need to open a new mqtt session
-        // every time?
-        // MQTT Setup
-        let mut rx_mqtt = [0u8; 256];
-        let mut tx_mqtt = [0u8; 1024];
-        let mut rx_tcp = [0u8; 256];
-        let mut tx_tcp = [0u8; 1024];
-        let mut mqtt_session =
-            Session::new(ConfigBuilder::new(Buffers::new(&mut rx_mqtt, &mut tx_mqtt)));
+    if mqtt_enabled {
+        let topic = alloc::format!("telemetry/{ID}");
+        let mut serializer_buff = [0u8; MDS_MAX_SIZE];
+        loop {
+            // MQTT Setup
+            let mut rx_mqtt = [0u8; 256];
+            let mut tx_mqtt = [0u8; 1024];
+            let mut rx_tcp = [0u8; 256];
+            let mut tx_tcp = [0u8; 1024];
+            let mut mqtt_session =
+                Session::new(ConfigBuilder::new(Buffers::new(&mut rx_mqtt, &mut tx_mqtt)));
 
-        let mut socket = TcpSocket::new(stack, &mut rx_tcp, &mut tx_tcp);
-        info!("Connecting to MQTT server ...");
-        if let Err(e) = socket
-            .connect(IpEndpoint::new(
-                IpAddress::Ipv4(IP_ADDR.parse().unwrap()),
-                1883,
-            ))
-            .await
-        {
-            error!("Failed to connect to mosquitto: {:?}", e);
+            let stack = mqtt_stack.as_mut().unwrap();
+            let mut socket = TcpSocket::new(*stack, &mut rx_tcp, &mut tx_tcp);
+            info!("Connecting to MQTT server ...");
+            if let Err(e) = socket
+                .connect(IpEndpoint::new(
+                    IpAddress::Ipv4(IP_ADDR.parse().unwrap()),
+                    1883,
+                ))
+                .await
+            {
+                error!("Failed to connect to mosquitto: {:?}", e);
+            }
+
+            // TODO handle properly and check results of connections / publishing
+            let _ = mqtt_session.connect(socket).await.inspect_err(|e| {
+                error!("Connection failed: {}", defmt::Debug2Format(&e));
+            });
+
+            loop {
+                led.toggle();
+                // The display is rendered by the `update_screen` task; here we just log
+                // the current state for debugging.
+                {
+                    let node_state = state.lock().await;
+                    info!(
+                        "neighbours:\n{}\nmds:\n{}",
+                        defmt::Debug2Format(&node_state.neighbour_matrix()),
+                        defmt::Debug2Format(&node_state.mds)
+                    );
+                }
+
+                // drain message to server queue
+                while let Ok(telmsg) = MQTT_TX_CHANNEL.try_receive() {
+                    let msg: &[u8] = match postcard::to_slice(&telmsg, &mut serializer_buff) {
+                        Ok(rs) => rs,
+                        Err(_) => &[], // todo consider creating error codes and publishing to mq
+                    };
+                    // TODO consider having different channels for different types of messages
+                    match mqtt_session
+                        .publish(Publication::new(topic.as_str(), msg))
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(minimq::PubError::Session(e)) => {
+                            error!(
+                                "Connection failed, reconnecting ... {}",
+                                defmt::Debug2Format(&e)
+                            );
+                            break;
+                        }
+                        Err(e) => {
+                            error!("Payload serialization error: {}", defmt::Debug2Format(&e));
+                        }
+                    }
+                }
+
+                Timer::after(Duration::from_millis(500)).await; // made this much faster for
+                // benchmarking
+            }
         }
-
-        // TODO handle properly and check results of connections / publishing
-        let _ = mqtt_session.connect(socket).await.inspect_err(|e| {
-            error!("Connection failed: {}", defmt::Debug2Format(&e));
-        });
-
+    } else {
         loop {
             led.toggle();
-            // The display is rendered by the `update_screen` task; here we just log
-            // the current state for debugging.
             {
                 let node_state = state.lock().await;
                 info!(
@@ -364,34 +430,7 @@ async fn main(spawner: embassy_executor::Spawner) {
                     defmt::Debug2Format(&node_state.mds)
                 );
             }
-
-            // drain message to server queue
-            while let Ok(telmsg) = MQTT_TX_CHANNEL.try_receive() {
-                let msg: &[u8] = match postcard::to_slice(&telmsg, &mut serializer_buff) {
-                    Ok(rs) => rs,
-                    Err(_) => &[], // todo consider creating error codes and publishing to mq
-                };
-                // TODO consider having different channels for different types of messages
-                match mqtt_session
-                    .publish(Publication::new(topic.as_str(), msg))
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(minimq::PubError::Session(e)) => {
-                        error!(
-                            "Connection failed, reconnecting ... {}",
-                            defmt::Debug2Format(&e)
-                        );
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Payload serialization error: {}", defmt::Debug2Format(&e));
-                    }
-                }
-            }
-
-            Timer::after(Duration::from_millis(500)).await; // made this much faster for
-            // benchmarking
+            Timer::after(Duration::from_secs(1)).await;
         }
     }
 }
