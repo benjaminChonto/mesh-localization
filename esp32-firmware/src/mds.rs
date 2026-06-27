@@ -1,3 +1,4 @@
+use crate::kabsch;
 use crate::state::MAX_SWARM_SIZE;
 use esp_hal::rng::Rng;
 use fixed::types::I16F16;
@@ -10,6 +11,9 @@ const MDS_ITERATIONS: usize = 50;
 #[derive(Default)]
 pub struct MDS {
     X: MdsResult,
+    /// Previous (Kabsch-aligned) solution, used as the orientation reference for
+    /// the next solve so the configuration stays stable frame-to-frame.
+    prev: MdsResult,
 }
 
 impl MDS {
@@ -26,14 +30,22 @@ impl MDS {
      * - substract mean from X (doesn't change end result, but keeps the values stable)
      *
      * SMACOF algorithm: <https://www.jstatsoft.org/article/view/v031i03>
+     *
+     * `anchor` is the index (in the swarm's sorted-MAC ordering) of this device
+     * itself. When given, the final configuration is translated so that node
+     * sits at the origin, i.e. the map is expressed in this node's own frame.
      */
     pub async fn compute(
         &mut self,
         d: Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
+        anchor: Option<usize>,
     ) -> &MdsResult {
         let D = make_symmetric(d);
         let n = D.len();
-        if self.X.is_empty() || self.X.len() != n {
+        // A fresh random start has no meaningful orientation to preserve, so we
+        // only Kabsch-align when warm-starting from a previous solution.
+        let reinitialized = self.X.is_empty() || self.X.len() != n;
+        if reinitialized {
             self.X = initialize_mds(n);
         }
 
@@ -71,6 +83,29 @@ impl MDS {
                 .collect();
             self.X = subtract_mean(&self.X);
         }
+
+        // Orient the new solution to match the previous one (rotation +
+        // translation, no scaling), then remember it as the next reference.
+        // Done after the SMACOF loop so the alignment scratch never crosses an
+        // await point and bloats this task's future.
+        if !reinitialized && self.prev.len() == n {
+            self.X = kabsch::align(&self.X, &self.prev);
+        }
+
+        // Pin this device's own node at the origin, so the configuration is
+        // expressed in this node's frame. Translation is rigid and does not
+        // affect the next frame's Kabsch rotation (which only depends on
+        // centred coordinates), so we anchor before storing `prev`.
+        if let Some(a) = anchor.filter(|&a| a < self.X.len()) {
+            let (ax, ay) = (self.X[a][0], self.X[a][1]);
+            for p in self.X.iter_mut() {
+                p[0] -= ax;
+                p[1] -= ay;
+            }
+        }
+
+        self.prev = self.X.clone();
+
         &self.X
     }
 }

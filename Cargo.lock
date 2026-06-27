@@ -392,6 +392,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordic"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ed0a176c0b8c5c95fa0523177530364c5b68a8895d9745730dbfa692a7412d0"
+dependencies = [
+ "fixed",
+]
+
+[[package]]
 name = "cordyceps"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1491,6 +1500,7 @@ dependencies = [
 name = "esp32-firmware"
 version = "0.1.0"
 dependencies = [
+ "cordic",
  "critical-section",
  "defmt 1.1.0",
  "defmt-rtt",
