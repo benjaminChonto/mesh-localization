@@ -13,7 +13,7 @@ use defmt::{error, info, warn};
 use defmt_rtt as _;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
-use embassy_sync::mutex::{Mutex, MutexGuard};
+use embassy_sync::mutex::Mutex;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
