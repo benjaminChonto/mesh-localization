@@ -92,7 +92,7 @@ fn draw_mds(
         frame.render_widget(paragraph, frame.area());
         return;
     }
-    let mut coords = [(0.0f64, 0.0f64); MAX_SWARM_SIZE];
+
     let current_node_index = macs.iter().position(|&mac| mac == *id).unwrap_or(0);
     let centerpoint = if current_node_index < mds.len() {
         &mds[current_node_index]
@@ -100,41 +100,63 @@ fn draw_mds(
         &mds[0]
     };
 
-    for (i, point) in mds.iter().enumerate() {
-        coords[i] = (
+    // Find the 2 closest other nodes by distance from this node
+    let mut first: Option<(usize, I16F16)> = None;
+    let mut second: Option<(usize, I16F16)> = None;
+    if current_node_index < distances.len() {
+        for (i, &dist) in distances[current_node_index].iter().enumerate() {
+            if i == current_node_index || i >= mds.len() {
+                continue;
+            }
+            match first {
+                None => first = Some((i, dist)),
+                Some((_, d)) if dist < d => {
+                    second = first;
+                    first = Some((i, dist));
+                }
+                _ => match second {
+                    None => second = Some((i, dist)),
+                    Some((_, d)) if dist < d => second = Some((i, dist)),
+                    _ => {}
+                },
+            }
+        }
+    }
+
+    // Build visible points: self at (0,0) + up to 2 closest
+    let mut visible = [(0.0f64, 0.0f64); 3];
+    let mut visible_labels = [current_node_index; 3];
+    let mut count = 1usize; // self is always index 0
+
+    for opt in [first, second].iter().flatten() {
+        let (idx, _) = *opt;
+        let point = &mds[idx];
+        visible[count] = (
             point[0].to_num::<f64>() - centerpoint[0].to_num::<f64>(),
             point[1].to_num::<f64>() - centerpoint[1].to_num::<f64>(),
         );
+        visible_labels[count] = idx;
+        count += 1;
     }
 
-    let coords = &coords[..mds.len()];
+    let visible_coords = &visible[..count];
+    let visible_labels = &visible_labels[..count];
 
-    let x_abs_max = coords.iter().map(|&(x, _)| x.abs()).fold(0.0f64, f64::max);
-    let y_abs_max = coords.iter().map(|&(_, y)| y.abs()).fold(0.0f64, f64::max);
-    let x_pad = x_abs_max * 0.15 + 0.01;
-    let y_pad = y_abs_max * 0.15 + 0.01;
+    const BOUND: f64 = 10.0;
 
     // canvas widget
     let canvas = Canvas::default()
         .block(Block::bordered().title("MDS"))
         .marker(Marker::Dot)
-        .x_bounds([-(x_abs_max + x_pad), x_abs_max + x_pad])
-        .y_bounds([-(y_abs_max + y_pad), y_abs_max + y_pad])
+        .x_bounds([-BOUND, BOUND])
+        .y_bounds([-BOUND, BOUND])
         .paint(|ctx| {
             ctx.draw(&Points {
-                coords,
+                coords: visible_coords,
                 color: Color::White,
             });
-            for (i, &(x, y)) in coords.iter().enumerate() {
-                ctx.print(x, y, format!("{i}"));
-            }
-            for (i, &(x, y)) in coords.iter().enumerate() {
-                let line = if (x, y) == (0.0, 0.0) {
-                    continue;
-                } else {
-                    format!("{:.2}m", distances[current_node_index][i].to_num::<f64>())
-                };
-                ctx.print(x, y - 0.02, line);
+            for (i, &(x, y)) in visible_coords.iter().enumerate() {
+                ctx.print(x, y, format!("{}", visible_labels[i]));
             }
         });
 
