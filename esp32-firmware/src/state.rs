@@ -230,9 +230,17 @@ impl NodeState {
                                 if node == n {
                                     I16F16::ZERO
                                 } else if *node == own_mac {
-                                    self.estimated_distances.get(n).copied().map(I16F16::from_num).unwrap_or(I16F16::MAX)
+                                    self.estimated_distances
+                                        .get(n)
+                                        .copied()
+                                        .map(I16F16::from_num)
+                                        .unwrap_or(I16F16::MAX)
                                 } else if *n == own_mac {
-                                    self.estimated_distances.get(node).copied().map(I16F16::from_num).unwrap_or(I16F16::MAX)
+                                    self.estimated_distances
+                                        .get(node)
+                                        .copied()
+                                        .map(I16F16::from_num)
+                                        .unwrap_or(I16F16::MAX)
                                 } else {
                                     self.neighbours
                                         .get(n)
@@ -262,9 +270,17 @@ impl NodeState {
                                 if node == n {
                                     I16F16::ZERO
                                 } else if *node == own_mac {
-                                    self.estimated_distances.get(n).copied().map(I16F16::from_num).unwrap_or(I16F16::MAX)
+                                    self.estimated_distances
+                                        .get(n)
+                                        .copied()
+                                        .map(I16F16::from_num)
+                                        .unwrap_or(I16F16::MAX)
                                 } else if *n == own_mac {
-                                    self.estimated_distances.get(node).copied().map(I16F16::from_num).unwrap_or(I16F16::MAX)
+                                    self.estimated_distances
+                                        .get(node)
+                                        .copied()
+                                        .map(I16F16::from_num)
+                                        .unwrap_or(I16F16::MAX)
                                 } else {
                                     self.neighbours
                                         .get(n)

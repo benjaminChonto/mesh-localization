@@ -162,9 +162,7 @@ pub fn all_estimated_distances(
 
     let direct = neighbours.get(&own_mac);
     dist.retain(|mac, &mut d| {
-        *mac != own_mac
-            && d < f32::INFINITY
-            && direct.map_or(true, |dn| !dn.contains_key(mac))
+        *mac != own_mac && d < f32::INFINITY && direct.map_or(true, |dn| !dn.contains_key(mac))
     });
 
     dist

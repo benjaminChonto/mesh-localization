@@ -109,7 +109,13 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
             let len = msg.len();
             let mut data = [0u8; 256];
             data[..len].copy_from_slice(msg);
-            TX_CHANNEL.send(TxPacket { dst: BROADCAST, len, data }).await;
+            TX_CHANNEL
+                .send(TxPacket {
+                    dst: BROADCAST,
+                    len,
+                    data,
+                })
+                .await;
         }
 
         Timer::after_millis(500).await;
@@ -144,7 +150,13 @@ async fn broadcast_tc(
             let len = msg.len();
             let mut data = [0u8; 256];
             data[..len].copy_from_slice(msg);
-            TX_CHANNEL.send(TxPacket { dst: BROADCAST, len, data }).await;
+            TX_CHANNEL
+                .send(TxPacket {
+                    dst: BROADCAST,
+                    len,
+                    data,
+                })
+                .await;
         }
     }
 }
@@ -206,13 +218,18 @@ async fn process_packet(
                     tc.neighbors.clone(),
                     tc.sequence,
                 );
+
                 if forward {
                     if let Ok(msg) = postcard::to_slice(&Packet::Tc(tc), &mut fwd_buf) {
                         let len = msg.len();
                         let mut data = [0u8; 256];
                         data[..len].copy_from_slice(msg);
                         if TX_CHANNEL
-                            .try_send(TxPacket { dst: BROADCAST, len, data })
+                            .try_send(TxPacket {
+                                dst: BROADCAST,
+                                len,
+                                data,
+                            })
                             .is_err()
                         {
                             warn!("TC forward dropped: TX channel full");
