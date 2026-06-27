@@ -21,6 +21,7 @@ use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, OutputConfig};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal::Blocking;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::screen;
@@ -45,6 +46,7 @@ const BROADCAST: [u8; 6] = [0xff; 6];
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
 static METRICS: StaticCell<Mutex<CriticalSectionRawMutex, PerformanceMetrics>> = StaticCell::new();
+static DISPLAY: StaticCell<screen::Display<I2c<'static, Blocking>>> = StaticCell::new();
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 static RX_CHANNEL: Channel<CriticalSectionRawMutex, RxPacket, RX_CHANNEL_SIZE> = Channel::new();
 static MQTT_TX_CHANNEL: Channel<CriticalSectionRawMutex, TelemetryMessage, MQTT_TX_CHANNEL_SIZE> =
@@ -205,6 +207,28 @@ async fn calculate_state(
 }
 
 #[embassy_executor::task]
+async fn update_screen(
+    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+    mut terminal: Option<screen::ScreenTerminal<'static, I2c<'static, Blocking>>>,
+) {
+    loop {
+        let (mds, macs, distances, id) = {
+            let node_state = state.lock().await;
+            (
+                node_state.mds.clone(),
+                node_state.get_ordered_mac_addresses(),
+                node_state.get_ordered_distances(),
+                node_state.mac,
+            )
+        };
+        if let Some(ref mut terminal) = terminal {
+            screen::render_mds(terminal, &macs, &distances, &mds, &id);
+        }
+        Timer::after_millis(300).await;
+    }
+}
+
+#[embassy_executor::task]
 async fn publish_metrics(perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>) {
     loop {
         let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Perf(perf.lock().await.clone()));
@@ -267,20 +291,12 @@ async fn main(spawner: embassy_executor::Spawner) {
         .with_sda(peripherals.GPIO0)
         .with_scl(peripherals.GPIO1);
 
-    let mut display = match screen::init(i2c) {
-        Ok(d) => Some(d),
+    let display = match screen::init(i2c) {
+        Ok(d) => Some(DISPLAY.init(d)),
         Err(e) => {
             info!("Failed to initialize display: {}", defmt::Debug2Format(&e));
             None
         }
-    };
-
-    let mut terminal = if let Some(ref mut display) = display {
-        info!("Display initialized");
-        screen::init_terminal(display).ok()
-    } else {
-        info!("Running without display");
-        None
     };
 
     let state: &'static Mutex<CriticalSectionRawMutex, NodeState> =
@@ -291,12 +307,21 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let (_, tx, rx) = esp_now.split();
 
+    let terminal = if let Some(display) = display {
+        info!("Display initialized");
+        screen::init_terminal(display).ok()
+    } else {
+        info!("Running without display");
+        None
+    };
+
     // Spawn tasks
     spawner.spawn(broadcast_ping(tx, state, perf).unwrap());
     spawner.spawn(receive_packet(rx).unwrap());
     spawner.spawn(process_packet(state, perf).unwrap());
     spawner.spawn(calculate_state(state, perf).unwrap());
     spawner.spawn(publish_metrics(perf).unwrap());
+    spawner.spawn(update_screen(state, terminal).unwrap());
 
     let topic = alloc::format!("telemetry/{ID}");
     let mut serializer_buff = [0u8; MDS_MAX_SIZE];
@@ -330,22 +355,16 @@ async fn main(spawner: embassy_executor::Spawner) {
 
         loop {
             led.toggle();
-            // Snapshot the shared state, releasing the lock at the end of this block
-            // so the values stay live for the display render below.
-            let (mds, macs, distances, id) = {
+            // The display is rendered by the `update_screen` task; here we just log
+            // the current state for debugging.
+            {
                 let node_state = state.lock().await;
                 info!(
                     "neighbours:\n{}\nmds:\n{}",
                     defmt::Debug2Format(&node_state.neighbour_matrix()),
                     defmt::Debug2Format(&node_state.mds)
                 );
-                (
-                    node_state.mds.clone(),
-                    node_state.get_ordered_mac_addresses(),
-                    node_state.get_ordered_distances(),
-                    node_state.mac,
-                )
-            };
+            }
 
             // drain message to server queue
             while let Ok(telmsg) = MQTT_TX_CHANNEL.try_receive() {
@@ -370,10 +389,6 @@ async fn main(spawner: embassy_executor::Spawner) {
                         error!("Payload serialization error: {}", defmt::Debug2Format(&e));
                     }
                 }
-            }
-
-            if let Some(ref mut terminal) = terminal {
-                screen::render_mds(terminal, &macs, &distances, &mds, &id);
             }
 
             Timer::after(Duration::from_millis(500)).await; // made this much faster for
