@@ -220,9 +220,7 @@ async fn process_packet(
                     tc.sequence,
                 );
 
-                if forward
-                    && let Ok(msg) = postcard::to_slice(&Packet::Tc(tc), &mut fwd_buf)
-                {
+                if forward && let Ok(msg) = postcard::to_slice(&Packet::Tc(tc), &mut fwd_buf) {
                     let len = msg.len();
                     let mut data = [0u8; 256];
                     data[..len].copy_from_slice(msg);
