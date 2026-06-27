@@ -3,6 +3,28 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ID");
     // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)
     println!("cargo:rustc-link-arg=-Tlinkall.x");
+    generate_rssi_table();
+}
+
+fn generate_rssi_table() {
+    use std::fmt::Write as _;
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    let dest = std::path::Path::new(&out_dir).join("rssi_to_dist.rs");
+
+    // TODO env factor and RSSI at one meter should be changed here
+    let mut code = String::new();
+    // 10^((-56 - rssi) / 25.0) as I16F16 bits (i32), for rssi = -128..=127
+    code.push_str("pub const RSSI_TO_DIST_BITS: [i32; 256] = [\n");
+    for rssi in -128i32..=127 {
+        let exponent = (-56.0f64 - rssi as f64) / 25.0;
+        let dist = 10.0f64.powf(exponent).min(32767.0).max(0.0);
+        let bits = (dist * 65536.0).round() as i32;
+        let _ = write!(code, "    {bits},\n");
+    }
+    code.push_str("];\n");
+
+    std::fs::write(dest, code).unwrap();
+    println!("cargo:rerun-if-changed=build.rs");
 }
 
 fn linker_be_nice() {

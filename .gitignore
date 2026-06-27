@@ -2,6 +2,9 @@
 debug/
 target/
 
+# Benchmark performance logs written by mesh-ui
+logs/
+
 # Editor configuration
 .vscode/
 .zed/
