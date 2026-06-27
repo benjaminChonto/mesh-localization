@@ -32,3 +32,4 @@ pub fn cpu_cycles() -> u32 {
     }
     cycles
 }
+pub const TX_CHANNEL_SIZE: usize = 8;
