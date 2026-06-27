@@ -93,7 +93,6 @@ async fn tx_task(mut tx: EspNowSender<'static>) {
 
 #[embassy_executor::task]
 async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
-    let mut buf = [0u8; 256];
     loop {
         // Measure in raw CPU cycles for maximum precision (see `cpu_cycles`).
         let start_cycles = cpu_cycles();
@@ -105,20 +104,17 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
         let finish = cpu_cycles().wrapping_sub(start_cycles);
 
         let packet = Packet::Hello(distances.unwrap_or_default());
-        if let Ok(msg) = postcard::to_slice(&packet, &mut buf) {
-            let len = msg.len();
-            let mut data = [0u8; 256];
-            data[..len].copy_from_slice(msg);
-            TX_CHANNEL
-                .send(TxPacket {
-                    dst: BROADCAST,
-                    len,
-                    data,
-                })
-                .await;
+        let mut data = [0u8; 256];
+        // Extract length first so the &mut borrow on data is dropped before we move data.
+        if let Ok(len) = postcard::to_slice(&packet, &mut data).map(|s| s.len())
+            && TX_CHANNEL
+                .try_send(TxPacket { dst: BROADCAST, len, data })
+                .is_err()
+        {
+            log::warn!("Hello dropped: TX channel full");
         }
 
-        Timer::after_millis(500).await;
+        Timer::after_millis(1000).await;
     }
 }
 
@@ -128,7 +124,6 @@ async fn broadcast_tc(
     topology: &'static Mutex<CriticalSectionRawMutex, Topology>,
 ) {
     use esp32_firmware::state::MAX_SWARM_SIZE;
-    let mut buf = [0u8; 256];
     loop {
         Timer::after(Duration::from_secs(5)).await;
 
@@ -141,22 +136,21 @@ async fn broadcast_tc(
                 .unwrap_or_default()
         };
 
-        let mut topo = topology.lock().await;
-        topo.expire_stale();
-        let tc = topo.generate_tc_message(neighbors);
-        let packet = Packet::Tc(tc);
+        // Drop the topology guard before serializing so we don't hold the lock
+        // across the send path.
+        let packet = {
+            let mut topo = topology.lock().await;
+            topo.expire_stale();
+            Packet::Tc(topo.generate_tc_message(neighbors))
+        };
 
-        if let Ok(msg) = postcard::to_slice(&packet, &mut buf) {
-            let len = msg.len();
-            let mut data = [0u8; 256];
-            data[..len].copy_from_slice(msg);
-            TX_CHANNEL
-                .send(TxPacket {
-                    dst: BROADCAST,
-                    len,
-                    data,
-                })
-                .await;
+        let mut data = [0u8; 256];
+        if let Ok(len) = postcard::to_slice(&packet, &mut data).map(|s| s.len())
+            && TX_CHANNEL
+                .try_send(TxPacket { dst: BROADCAST, len, data })
+                .is_err()
+        {
+            log::warn!("TC dropped: TX channel full");
         }
     }
 }

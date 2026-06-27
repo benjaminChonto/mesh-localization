@@ -171,7 +171,7 @@ impl NodeState {
                         .last_seen
                         .get(&mac)
                         .and_then(|&t| now.checked_duration_since(t))
-                        .map_or(true, |elapsed| elapsed > NEIGHBOR_EXPIRY)
+                        .is_none_or(|elapsed| elapsed > NEIGHBOR_EXPIRY)
             })
             .copied()
             .collect();

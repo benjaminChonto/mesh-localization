@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 const NEIGHBOR_EXPIRY: u64 = 10; // seconds
 
+type TopologyEntry = (Vec<[u8; 6], MAX_SWARM_SIZE>, i32, Instant);
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TcPayload {
     pub origin_mac: [u8; 6],
@@ -27,7 +29,7 @@ pub struct Topology {
     // origin_mac → highest seen sequence
     seen: HashMap<[u8; 6], i32>,
     // origin_mac → (neighbor list, sequence, last-updated timestamp)
-    topology_table: HashMap<[u8; 6], (Vec<[u8; 6], MAX_SWARM_SIZE>, i32, Instant)>,
+    topology_table: HashMap<[u8; 6], TopologyEntry>,
 }
 
 impl Topology {
@@ -59,10 +61,10 @@ impl Topology {
             return false;
         }
 
-        if let Some(&seen_seq) = self.seen.get(&origin_mac) {
-            if seen_seq >= sequence {
-                return false;
-            }
+        if let Some(&seen_seq) = self.seen.get(&origin_mac)
+            && seen_seq >= sequence
+        {
+            return false;
         }
 
         self.seen.insert(origin_mac, sequence);
@@ -77,7 +79,7 @@ impl Topology {
 
     pub fn topology_table(
         &self,
-    ) -> &HashMap<[u8; 6], (Vec<[u8; 6], MAX_SWARM_SIZE>, i32, Instant)> {
+    ) -> &HashMap<[u8; 6], TopologyEntry> {
         &self.topology_table
     }
 
@@ -87,10 +89,10 @@ impl Topology {
         neighbors: Vec<[u8; 6], MAX_SWARM_SIZE>,
         sequence: i32,
     ) {
-        if let Some((_, existing_seq, _)) = self.topology_table.get(&mac) {
-            if *existing_seq >= sequence {
-                return;
-            }
+        if let Some((_, existing_seq, _)) = self.topology_table.get(&mac)
+            && *existing_seq >= sequence
+        {
+            return;
         }
         self.topology_table
             .insert(mac, (neighbors, sequence, Instant::now()));
