@@ -640,7 +640,6 @@ async fn main(spawner: embassy_executor::Spawner) {
                         .await
                     {
                         Ok(_) => {
-                            info!("sent!");
                         }
                         Err(minimq::PubError::Session(e)) => {
                             error!(
