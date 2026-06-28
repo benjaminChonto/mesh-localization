@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    env,
     fs::{self, File},
     io::{self, BufWriter, Write},
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -135,7 +136,13 @@ impl PerfCsvLogger {
     fn new() -> io::Result<Self> {
         // Ensure the log directory exists; `File::create` does not create parents.
         fs::create_dir_all("logs")?;
-        let path = format!("logs/perf-log-{}.csv", unix_millis());
+        // Tag the filename with the node count of this run when `MESH_NODES` is
+        // set, so logs are self-identifying (e.g. `perf-log-5nodes-<ts>.csv`).
+        let node_tag = match env::var("MESH_NODES") {
+            Ok(n) if !n.is_empty() => format!("{n}nodes-"),
+            _ => String::new(),
+        };
+        let path = format!("logs/perf-log-{}{}.csv", node_tag, unix_millis());
         let mut writer = BufWriter::new(File::create(&path)?);
         writeln!(
             writer,
