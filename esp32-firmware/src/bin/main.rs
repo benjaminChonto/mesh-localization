@@ -122,7 +122,7 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
             warn!("Hello dropped: TX channel full");
         }
 
-        Timer::after_millis(500).await;
+        Timer::after_millis(100).await;
     }
 }
 
@@ -318,10 +318,12 @@ async fn calculate_state(
             state.lock().await.mds = mds.clone(); // TODO the clone might be expensive
             // double clone :(
             // but publish state when available
-            let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(mds.clone()));
-            perf.lock().await.calculate_state_cycles = finish;
+            if SEND_TELEMETRY {
+                let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(mds.clone()));
+                perf.lock().await.calculate_state_cycles = finish;
+            }
         }
-        Timer::after_millis(100).await;
+        Timer::after_millis(300).await;
     }
 }
 
@@ -331,7 +333,6 @@ async fn calculate_state(
 #[embassy_executor::task]
 async fn button_task(
     mut button: Input<'static>,
-    mut led: Output<'static>,
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
     topology: &'static Mutex<CriticalSectionRawMutex, Topology>,
     route: &'static Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>>,
@@ -344,9 +345,7 @@ async fn button_task(
             continue;
         }
 
-        led.set_low();
         button.wait_for_rising_edge().await;
-        led.set_high();
 
         // Wait up to 300 ms for a second press to detect double-click
         let double = with_timeout(Duration::from_millis(300), button.wait_for_falling_edge())
@@ -355,7 +354,6 @@ async fn button_task(
 
         if double {
             Timer::after_millis(20).await; // debounce second press
-            led.set_low();
             {
                 let mut mode = screen_mode.lock().await;
                 *mode = match *mode {
@@ -365,7 +363,6 @@ async fn button_task(
                 info!("Screen mode toggled");
             }
             button.wait_for_rising_edge().await;
-            led.set_high();
         } else {
             // Single press: collect all nodes except self, sorted for consistent cycling
             let (own_mac, nodes) = {
@@ -437,7 +434,6 @@ async fn update_screen(
         let mode = *screen_mode.lock().await;
 
         if let Some(ref mut terminal) = terminal {
-            info!("update screen");
             match mode {
                 screen::ScreenMode::Mds => {
                     screen::render_mds(terminal, &macs, &distances, &mds, &id, path.as_ref());
@@ -529,7 +525,7 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let esp_now = interfaces.esp_now;
 
-    let led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+    let mut led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
     let button = Input::new(
         peripherals.GPIO9,
         InputConfig::default().with_pull(Pull::Up),
@@ -581,8 +577,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(process_packet(state, perf, topology).unwrap());
     spawner.spawn(calculate_state(state, perf, topology).unwrap());
     spawner.spawn(expire_stale_neighbors(state).unwrap());
-    spawner.spawn(publish_metrics(perf).unwrap());
-    spawner.spawn(button_task(button, led, state, topology, route, screen_mode).unwrap());
+    spawner.spawn(button_task(button, state, topology, route, screen_mode).unwrap());
     spawner.spawn(update_screen(state, route, screen_mode, terminal).unwrap());
 
     if mqtt_enabled {
@@ -616,6 +611,7 @@ async fn main(spawner: embassy_executor::Spawner) {
             });
 
             'connected: loop {
+                led.toggle();
                 // The display is rendered by the `update_screen` task; here we just log
                 // the current state for debugging.
                 let macs = {
@@ -643,7 +639,9 @@ async fn main(spawner: embassy_executor::Spawner) {
                         .publish(Publication::new(topic.as_str(), msg))
                         .await
                     {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            info!("sent!");
+                        }
                         Err(minimq::PubError::Session(e)) => {
                             error!(
                                 "Connection failed, reconnecting ... {}",
@@ -676,7 +674,7 @@ async fn main(spawner: embassy_executor::Spawner) {
                 let topo = topology.lock().await;
                 topo.log_topology(&macs);
             }
-            Timer::after(Duration::from_secs(1)).await;
+            Timer::after(Duration::from_millis(500)).await;
         }
     }
 }
