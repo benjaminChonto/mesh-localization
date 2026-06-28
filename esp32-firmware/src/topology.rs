@@ -115,7 +115,7 @@ impl Topology {
         info!("topology ({} entries):", self.topology_table.len());
         for (origin, (neighbors, seq, _)) in &self.topology_table {
             let oi = idx_of(origin);
-            let ni: Vec<isize, MAX_SWARM_SIZE> = neighbors.iter().map(|n| idx_of(n)).collect();
+            let ni: Vec<isize, MAX_SWARM_SIZE> = neighbors.iter().map(&idx_of).collect();
             info!(
                 "  node {} (seq {}) -> {}",
                 oi,

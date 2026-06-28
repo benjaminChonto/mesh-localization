@@ -207,7 +207,7 @@ impl NodeState {
         neighbors: &Vec<[u8; 6], MAX_SWARM_SIZE>,
         distances: &Vec<I16F16, MAX_SWARM_SIZE>,
     ) {
-        let map = self.neighbours.entry(origin).or_insert_with(HashMap::new);
+        let map = self.neighbours.entry(origin).or_default();
         for (mac, &dist) in neighbors.iter().zip(distances.iter()) {
             if dist < I16F16::MAX {
                 map.entry(*mac).or_insert_with(|| State::from_dist(dist));
