@@ -19,7 +19,7 @@ use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::Blocking;
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::{Level, OutputConfig};
+use esp_hal::gpio::{Input, InputConfig, Level, OutputConfig, Pull};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
@@ -405,6 +405,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     // On board status led
     let mut led =
         esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+    let button = Input::new(peripherals.GPIO9, InputConfig::default().with_pull(Pull::Up));
 
     let i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
         .unwrap()
@@ -480,7 +481,11 @@ async fn main(spawner: embassy_executor::Spawner) {
             });
 
             loop {
-                led.toggle();
+                if button.is_low() {
+                    led.set_low();
+                } else {
+                    led.set_high();
+                }
                 // The display is rendered by the `update_screen` task; here we just log
                 // the current state for debugging.
                 {
@@ -527,7 +532,11 @@ async fn main(spawner: embassy_executor::Spawner) {
         }
     } else {
         loop {
-            led.toggle();
+            if button.is_low() {
+                led.set_low();
+            } else {
+                led.set_high();
+            }
             {
                 let topo = topology.lock().await;
                 info!("topology:\n{}", defmt::Debug2Format(topo.topology_table()));
