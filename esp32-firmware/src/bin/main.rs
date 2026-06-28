@@ -15,7 +15,7 @@ use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpAddress, IpEndpoint, StackResources};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Timer, with_timeout};
 use esp_backtrace as _;
 use esp_hal::Blocking;
 use esp_hal::clock::CpuClock;
@@ -48,6 +48,8 @@ const BROADCAST: [u8; 6] = [0xff; 6];
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
 static ROUTE: StaticCell<Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>>> =
+    StaticCell::new();
+static SCREEN_MODE: StaticCell<Mutex<CriticalSectionRawMutex, screen::ScreenMode>> =
     StaticCell::new();
 static METRICS: StaticCell<Mutex<CriticalSectionRawMutex, PerformanceMetrics>> = StaticCell::new();
 static DISPLAY: StaticCell<screen::Display<I2c<'static, Blocking>>> = StaticCell::new();
@@ -133,13 +135,18 @@ async fn broadcast_tc(
     loop {
         Timer::after(Duration::from_secs(5)).await;
 
-        let neighbors: Vec<[u8; 6], MAX_SWARM_SIZE> = {
+        let (neighbors, distances) = {
             let node_state = state.lock().await;
-            node_state
-                .neighbours
-                .get(&node_state.mac)
-                .map(|m| m.keys().copied().collect())
-                .unwrap_or_default()
+            let mac = node_state.mac;
+            let mut neighbors: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
+            let mut distances: Vec<I16F16, MAX_SWARM_SIZE> = Vec::new();
+            if let Some(adj) = node_state.neighbours.get(&mac) {
+                for (&nbr, state) in adj {
+                    let _ = neighbors.push(nbr);
+                    let _ = distances.push(state.dist);
+                }
+            }
+            (neighbors, distances)
         };
 
         // Drop the topology guard before serializing so we don't hold the lock
@@ -147,7 +154,7 @@ async fn broadcast_tc(
         let packet = {
             let mut topo = topology.lock().await;
             topo.expire_stale();
-            Packet::Tc(topo.generate_tc_message(neighbors))
+            Packet::Tc(topo.generate_tc_message(neighbors, distances))
         };
 
         let mut data = [0u8; 256];
@@ -216,6 +223,11 @@ async fn process_packet(
                     let mut node_state = state.lock().await;
                     let mac = node_state.mac;
                     node_state.update_distance_from_self(mac, rx.src, rx.rssi);
+                    node_state.update_tc_neighbor_distances(
+                        tc.origin_mac,
+                        &tc.neighbors,
+                        &tc.distances,
+                    );
                 }
                 let forward = topology.lock().await.process_tc_message(
                     tc.origin_mac,
@@ -307,9 +319,8 @@ async fn calculate_state(
     }
 }
 
-/// Cycles the target node on each button press and recomputes the Dijkstra
-/// route, which `update_screen` then uses to filter the MDS display.
-/// Pressing past the last node deselects (route = None, full view restored).
+/// Single press: cycle target node and recompute Dijkstra route.
+/// Double press (second press within 300 ms): toggle MDS ↔ Table screen.
 #[embassy_executor::task]
 async fn button_task(
     mut button: Input<'static>,
@@ -317,6 +328,7 @@ async fn button_task(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
     topology: &'static Mutex<CriticalSectionRawMutex, Topology>,
     route: &'static Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>>,
+    screen_mode: &'static Mutex<CriticalSectionRawMutex, screen::ScreenMode>,
 ) {
     loop {
         button.wait_for_falling_edge().await;
@@ -324,55 +336,72 @@ async fn button_task(
         if button.is_high() {
             continue;
         }
-        led.set_low(); // LED on (active-low) while held
 
-        // Collect all nodes except self, sorted for consistent cycling order
-        let (own_mac, nodes) = {
-            let node_state = state.lock().await;
-            let topo = topology.lock().await;
-            let own = node_state.mac;
-            let mut nodes: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
-            for &mac in node_state.neighbours.keys().chain(topo.topology_table().keys()) {
-                if mac != own && !nodes.contains(&mac) {
-                    let _ = nodes.push(mac);
-                }
-            }
-            nodes.sort_unstable();
-            (own, nodes)
-        };
-
-        if !nodes.is_empty() {
-            // Advance to next target; wrap past last → None (deselect)
-            let current = route.lock().await.as_ref().and_then(|p| p.last().copied());
-            let next_target = match current.and_then(|c| nodes.iter().position(|&m| m == c)) {
-                Some(i) if i + 1 < nodes.len() => Some(nodes[i + 1]),
-                Some(_) => None, // was last node, wrap to no selection
-                None => Some(nodes[0]),
-            };
-
-            // Compute path without holding both locks at once
-            let neighbours_snap = state.lock().await.neighbours.clone();
-            let new_route = match next_target {
-                Some(t) => {
-                    let topo = topology.lock().await;
-                    routing::dijkstra_path(&topo, t, &neighbours_snap)
-                }
-                None => None,
-            };
-            *route.lock().await = new_route;
-
-            info!(
-                "Button: target={:?} reachable={}",
-                next_target,
-                route.lock().await.is_some()
-            );
-        }
-
+        led.set_low();
         button.wait_for_rising_edge().await;
-        led.set_high(); // LED off on release
+        led.set_high();
 
-        // suppress unused warning when own_mac is only used in the node filter
-        let _ = own_mac;
+        // Wait up to 300 ms for a second press to detect double-click
+        let double = with_timeout(Duration::from_millis(300), button.wait_for_falling_edge())
+            .await
+            .is_ok();
+
+        if double {
+            Timer::after_millis(20).await; // debounce second press
+            led.set_low();
+            {
+                let mut mode = screen_mode.lock().await;
+                *mode = match *mode {
+                    screen::ScreenMode::Mds => screen::ScreenMode::Table,
+                    screen::ScreenMode::Table => screen::ScreenMode::Mds,
+                };
+                info!("Screen mode toggled");
+            }
+            button.wait_for_rising_edge().await;
+            led.set_high();
+        } else {
+            // Single press: collect all nodes except self, sorted for consistent cycling
+            let (own_mac, nodes) = {
+                let node_state = state.lock().await;
+                let topo = topology.lock().await;
+                let own = node_state.mac;
+                let mut nodes: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
+                for &mac in node_state.neighbours.keys().chain(topo.topology_table().keys()) {
+                    if mac != own && !nodes.contains(&mac) {
+                        let _ = nodes.push(mac);
+                    }
+                }
+                nodes.sort_unstable();
+                (own, nodes)
+            };
+
+            if !nodes.is_empty() {
+                // Advance to next target; wrap past last → None (deselect)
+                let current = route.lock().await.as_ref().and_then(|p| p.last().copied());
+                let next_target = match current.and_then(|c| nodes.iter().position(|&m| m == c)) {
+                    Some(i) if i + 1 < nodes.len() => Some(nodes[i + 1]),
+                    Some(_) => None,
+                    None => Some(nodes[0]),
+                };
+
+                let neighbours_snap = state.lock().await.neighbours.clone();
+                let new_route = match next_target {
+                    Some(t) => {
+                        let topo = topology.lock().await;
+                        routing::dijkstra_path(&topo, t, &neighbours_snap)
+                    }
+                    None => None,
+                };
+                *route.lock().await = new_route;
+
+                info!(
+                    "Button: target={:?} reachable={}",
+                    next_target,
+                    route.lock().await.is_some()
+                );
+            }
+            let _ = own_mac;
+        }
     }
 }
 
@@ -381,6 +410,7 @@ async fn button_task(
 async fn update_screen(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
     route: &'static Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>>,
+    screen_mode: &'static Mutex<CriticalSectionRawMutex, screen::ScreenMode>,
     mut terminal: Option<screen::ScreenTerminal<'static, I2c<'static, Blocking>>>,
 ) {
     loop {
@@ -392,8 +422,18 @@ async fn update_screen(
         drop(node_state);
 
         let path = route.lock().await;
+        let target_mac = path.as_ref().and_then(|p| p.last().copied());
+        let mode = *screen_mode.lock().await;
+
         if let Some(ref mut terminal) = terminal {
-            screen::render_mds(terminal, &macs, &distances, &mds, &id, path.as_ref());
+            match mode {
+                screen::ScreenMode::Mds => {
+                    screen::render_mds(terminal, &macs, &distances, &mds, &id, path.as_ref());
+                }
+                screen::ScreenMode::Table => {
+                    screen::render_table(terminal, &macs, &distances, &id, target_mac);
+                }
+            }
         }
         drop(path);
 
@@ -515,6 +555,9 @@ async fn main(spawner: embassy_executor::Spawner) {
     let route: &'static Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>> =
         ROUTE.init(Mutex::new(None));
 
+    let screen_mode: &'static Mutex<CriticalSectionRawMutex, screen::ScreenMode> =
+        SCREEN_MODE.init(Mutex::new(screen::ScreenMode::Mds));
+
     // Spawn tasks
     spawner.spawn(tx_task(tx).unwrap());
     spawner.spawn(broadcast_hello(state).unwrap());
@@ -524,8 +567,8 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(calculate_state(state, perf, topology).unwrap());
     spawner.spawn(expire_stale_neighbors(state).unwrap());
     spawner.spawn(publish_metrics(perf).unwrap());
-    spawner.spawn(button_task(button, led, state, topology, route).unwrap());
-    spawner.spawn(update_screen(state, route, terminal).unwrap());
+    spawner.spawn(button_task(button, led, state, topology, route, screen_mode).unwrap());
+    spawner.spawn(update_screen(state, route, screen_mode, terminal).unwrap());
 
     if mqtt_enabled {
         let topic = alloc::format!("telemetry/{ID}");
