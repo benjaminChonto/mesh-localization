@@ -2,9 +2,10 @@ use core::f32::consts::PI;
 
 use crate::kabsch;
 use crate::state::MAX_SWARM_SIZE;
+use defmt::info;
 use esp_hal::rng::Rng;
 use fixed::types::I16F16;
-use fixed_trigonometry::{atan::atan2, cos, sin};
+use fixed_trigonometry::{atan::atan2, cos, sin, wrap_phase};
 use heapless::Vec;
 use serde::de::Unexpected::Map;
 use shared::{MdsResult, NodePosition};
@@ -134,22 +135,26 @@ impl MDS {
         // calculate angle
         // sin(theta) = y / (x^2 + y^2)
         // theta = arcsin( y / (x^2 + y*2))
-        let theta = I16F16::from_num(PI) - atan2(diff[1], diff[0]);
+        let dx = diff[0];
+        let dy = diff[1];
+
+        let scale = dx.abs().max(dy.abs());
+
+        if scale == I16F16::from_num(0) {
+            return self.X.clone();
+        }
+
+        let theta = wrap_phase(I16F16::from_num(PI) - atan2(dy / scale, dx / scale));
 
         let cos_theta = cos(theta);
         let sin_theta = sin(theta);
         // clockwise rotation:
-        //   x * cos(theta) + y * sin(theta)
-        // - x * sin(theta) + y * cos(theta)
-        let rotation_vector: NodePosition = Vec::from([
-            diff[0] * cos_theta + diff[1] * sin_theta,
-            - diff[0] * sin_theta + diff[1] * cos_theta
-        ]);
-
+        //   x * cos(theta) - y * sin(theta)
+        //   x * sin(theta) + y * cos(theta)
         self.X.iter().map(|poz| {
             Vec::from([
-                rotation_vector[0] * poz[0],
-                rotation_vector[1] * poz[1]
+                poz[0] * cos_theta - poz[1] * sin_theta,
+                poz[0] * sin_theta + poz[1] * cos_theta,
             ])
         }).collect()
 
