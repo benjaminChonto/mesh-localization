@@ -135,6 +135,7 @@ pub struct NodeState {
     pub neighbours: HashMap<[u8; 6], HashMap<[u8; 6], State>>,
     pub mds: MdsResult,
     pub estimated_distances: HashMap<[u8; 6], f32>,
+    pair_distances: HashMap<([u8; 6], [u8; 6]), f32>,
     last_seen: HashMap<[u8; 6], Instant>,
 }
 
@@ -145,6 +146,7 @@ impl NodeState {
             neighbours: HashMap::new(),
             mds: Vec::default(),
             estimated_distances: HashMap::new(),
+            pair_distances: HashMap::new(),
             last_seen: HashMap::new(),
         };
         state.neighbours.insert(mac, HashMap::new());
@@ -205,7 +207,7 @@ impl NodeState {
         neighbors: &Vec<[u8; 6], MAX_SWARM_SIZE>,
         distances: &Vec<I16F16, MAX_SWARM_SIZE>,
     ) {
-        let map = self.neighbours.entry(origin).or_insert_with(HashMap::new);
+        let map = self.neighbours.entry(origin).or_default();
         for (mac, &dist) in neighbors.iter().zip(distances.iter()) {
             if dist < I16F16::MAX {
                 map.entry(*mac).or_insert_with(|| State::from_dist(dist));
@@ -215,6 +217,10 @@ impl NodeState {
 
     pub fn update_estimated_distances(&mut self, estimates: HashMap<[u8; 6], f32>) {
         self.estimated_distances = estimates;
+    }
+
+    pub fn update_pair_distances(&mut self, distances: HashMap<([u8; 6], [u8; 6]), f32>) {
+        self.pair_distances = distances;
     }
 
     // method that updates the matrix of measurements that a node has of its neighbours
@@ -273,7 +279,13 @@ impl NodeState {
                                         .get(n)
                                         .and_then(|nbrs| nbrs.get(node))
                                         .map(|s| s.dist)
-                                        .unwrap_or(I16F16::MAX)
+                                        .unwrap_or_else(|| {
+                                            self.pair_distances
+                                                .get(&(*node, *n))
+                                                .copied()
+                                                .map(I16F16::from_num)
+                                                .unwrap_or(I16F16::MAX)
+                                        })
                                 }
                             })
                     })
@@ -313,7 +325,13 @@ impl NodeState {
                                         .get(n)
                                         .and_then(|nbrs| nbrs.get(node))
                                         .map(|s| s.dist)
-                                        .unwrap_or(I16F16::MAX)
+                                        .unwrap_or_else(|| {
+                                            self.pair_distances
+                                                .get(&(*node, *n))
+                                                .copied()
+                                                .map(I16F16::from_num)
+                                                .unwrap_or(I16F16::MAX)
+                                        })
                                 }
                             })
                     })

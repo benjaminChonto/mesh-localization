@@ -130,6 +130,99 @@ pub fn dijkstra_rssi(
     Some(rssi_hops)
 }
 
+/// Builds a symmetric adjacency from `neighbours`.
+/// For each stored edge A→B, also inserts B→A, taking the minimum when both
+/// directions have been measured directly.
+fn build_symmetric_adjacency(
+    neighbours: &HashMap<[u8; 6], HashMap<[u8; 6], State>>,
+) -> HashMap<[u8; 6], HashMap<[u8; 6], f32>> {
+    let mut adj: HashMap<[u8; 6], HashMap<[u8; 6], f32>> = HashMap::new();
+    for (&src, edges) in neighbours {
+        for (&dst, state) in edges {
+            let d = state.dist.to_num::<f32>();
+            adj.entry(src)
+                .or_insert_with(HashMap::new)
+                .entry(dst)
+                .and_modify(|e| {
+                    if d < *e {
+                        *e = d;
+                    }
+                })
+                .or_insert(d);
+            adj.entry(dst)
+                .or_insert_with(HashMap::new)
+                .entry(src)
+                .and_modify(|e| {
+                    if d < *e {
+                        *e = d;
+                    }
+                })
+                .or_insert(d);
+        }
+    }
+    adj
+}
+
+/// Runs Dijkstra from every node in the symmetric adjacency and returns
+/// estimated distances for all reachable (source, destination) pairs.
+/// Used to fill in non-direct-neighbour entries in the distance matrix.
+pub fn all_pairs_estimated_distances(
+    neighbours: &HashMap<[u8; 6], HashMap<[u8; 6], State>>,
+) -> HashMap<([u8; 6], [u8; 6]), f32> {
+    let adj = build_symmetric_adjacency(neighbours);
+    let nodes: Vec<[u8; 6], MAX_SWARM_SIZE> = adj.keys().copied().collect();
+    let mut result: HashMap<([u8; 6], [u8; 6]), f32> = HashMap::new();
+
+    for &source in &nodes {
+        let mut dist: HashMap<[u8; 6], f32> = HashMap::new();
+        let mut visited: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
+        for &n in &nodes {
+            dist.insert(n, f32::INFINITY);
+        }
+        dist.insert(source, 0.0);
+
+        loop {
+            let current = nodes
+                .iter()
+                .filter(|n| !visited.contains(n))
+                .min_by(|&&a, &&b| {
+                    dist.get(&a)
+                        .unwrap_or(&f32::INFINITY)
+                        .partial_cmp(dist.get(&b).unwrap_or(&f32::INFINITY))
+                        .unwrap_or(core::cmp::Ordering::Equal)
+                })
+                .copied();
+
+            let current = match current {
+                Some(n) if *dist.get(&n).unwrap_or(&f32::INFINITY) < f32::INFINITY => n,
+                _ => break,
+            };
+
+            let _ = visited.push(current);
+
+            if let Some(edges) = adj.get(&current) {
+                for (&neighbor, &d) in edges {
+                    if visited.contains(&neighbor) {
+                        continue;
+                    }
+                    let new_dist = dist.get(&current).copied().unwrap_or(f32::INFINITY) + d;
+                    if new_dist < *dist.get(&neighbor).unwrap_or(&f32::INFINITY) {
+                        dist.insert(neighbor, new_dist);
+                    }
+                }
+            }
+        }
+
+        for (&dst, &d) in &dist {
+            if dst != source && d < f32::INFINITY {
+                result.insert((source, dst), d);
+            }
+        }
+    }
+
+    result
+}
+
 /// Runs Dijkstra from own_mac to all reachable nodes and returns the estimated
 /// total distance (metres) for each. Direct neighbours are excluded because
 /// their measured distance is more accurate than any estimate.

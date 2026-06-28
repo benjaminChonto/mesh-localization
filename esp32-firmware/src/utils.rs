@@ -6,7 +6,7 @@ pub const ID: &str = match option_env!("ID") {
     None => "0",
 };
 pub const SEND_TELEMETRY: bool = match option_env!("SEND_TELEMETRY") {
-    Some(v) => true,
+    Some(_v) => true,
     None => false,
 };
 
