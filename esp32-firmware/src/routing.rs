@@ -23,11 +23,13 @@ fn collect_nodes(
     nodes
 }
 
-pub fn dijkstra_rssi(
+/// Shared Dijkstra core. Returns the ordered MAC path from own_mac → target,
+/// or `None` if the target is unreachable.
+fn dijkstra_inner(
     topology: &Topology,
     target: [u8; 6],
     neighbours: &HashMap<[u8; 6], HashMap<[u8; 6], State>>,
-) -> Option<Vec<f32, MAX_SWARM_SIZE>> {
+) -> Option<Vec<[u8; 6], MAX_SWARM_SIZE>> {
     let own_mac = topology.own_mac();
     let all_nodes = collect_nodes(topology, neighbours);
 
@@ -97,6 +99,23 @@ pub fn dijkstra_rssi(
         }
     }
     path.as_mut_slice().reverse();
+    Some(path)
+}
+
+pub fn dijkstra_path(
+    topology: &Topology,
+    target: [u8; 6],
+    neighbours: &HashMap<[u8; 6], HashMap<[u8; 6], State>>,
+) -> Option<Vec<[u8; 6], MAX_SWARM_SIZE>> {
+    dijkstra_inner(topology, target, neighbours)
+}
+
+pub fn dijkstra_rssi(
+    topology: &Topology,
+    target: [u8; 6],
+    neighbours: &HashMap<[u8; 6], HashMap<[u8; 6], State>>,
+) -> Option<Vec<f32, MAX_SWARM_SIZE>> {
+    let path = dijkstra_inner(topology, target, neighbours)?;
 
     let mut rssi_hops: Vec<f32, MAX_SWARM_SIZE> = Vec::new();
     for i in 0..path.len().saturating_sub(1) {

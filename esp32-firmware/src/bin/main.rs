@@ -19,17 +19,17 @@ use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::Blocking;
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::{Input, InputConfig, Level, OutputConfig, Pull};
+use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::esp_now::{EspNowReceiver, EspNowSender};
 use esp32_firmware::mds::MDS;
 use esp32_firmware::routing;
 use esp32_firmware::screen;
-use esp32_firmware::state::NodeState;
+use esp32_firmware::state::{MAX_SWARM_SIZE, NodeState};
 use esp32_firmware::topology::{Packet, Topology};
 use esp32_firmware::utils::{
-    DISTANCE_MAP_MAX_SIZE, ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, NETWORK_RETRIES,
+    ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, NETWORK_RETRIES,
     RX_CHANNEL_SIZE, SEND_TELEMETRY, TX_CHANNEL_SIZE, cpu_cycles,
 };
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
@@ -47,6 +47,8 @@ const _DUMMY_MSG: [u8; 6] = [0u8; 6];
 const BROADCAST: [u8; 6] = [0xff; 6];
 
 static STATE: StaticCell<Mutex<CriticalSectionRawMutex, NodeState>> = StaticCell::new();
+static ROUTE: StaticCell<Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>>> =
+    StaticCell::new();
 static METRICS: StaticCell<Mutex<CriticalSectionRawMutex, PerformanceMetrics>> = StaticCell::new();
 static DISPLAY: StaticCell<screen::Display<I2c<'static, Blocking>>> = StaticCell::new();
 static TC_TOPOLOGY: StaticCell<Mutex<CriticalSectionRawMutex, Topology>> = StaticCell::new();
@@ -305,10 +307,80 @@ async fn calculate_state(
     }
 }
 
+/// Cycles the target node on each button press and recomputes the Dijkstra
+/// route, which `update_screen` then uses to filter the MDS display.
+/// Pressing past the last node deselects (route = None, full view restored).
+#[embassy_executor::task]
+async fn button_task(
+    mut button: Input<'static>,
+    mut led: Output<'static>,
+    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+    topology: &'static Mutex<CriticalSectionRawMutex, Topology>,
+    route: &'static Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>>,
+) {
+    loop {
+        button.wait_for_falling_edge().await;
+        Timer::after_millis(20).await; // debounce
+        if button.is_high() {
+            continue;
+        }
+        led.set_low(); // LED on (active-low) while held
+
+        // Collect all nodes except self, sorted for consistent cycling order
+        let (own_mac, nodes) = {
+            let node_state = state.lock().await;
+            let topo = topology.lock().await;
+            let own = node_state.mac;
+            let mut nodes: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
+            for &mac in node_state.neighbours.keys().chain(topo.topology_table().keys()) {
+                if mac != own && !nodes.contains(&mac) {
+                    let _ = nodes.push(mac);
+                }
+            }
+            nodes.sort_unstable();
+            (own, nodes)
+        };
+
+        if !nodes.is_empty() {
+            // Advance to next target; wrap past last → None (deselect)
+            let current = route.lock().await.as_ref().and_then(|p| p.last().copied());
+            let next_target = match current.and_then(|c| nodes.iter().position(|&m| m == c)) {
+                Some(i) if i + 1 < nodes.len() => Some(nodes[i + 1]),
+                Some(_) => None, // was last node, wrap to no selection
+                None => Some(nodes[0]),
+            };
+
+            // Compute path without holding both locks at once
+            let neighbours_snap = state.lock().await.neighbours.clone();
+            let new_route = match next_target {
+                Some(t) => {
+                    let topo = topology.lock().await;
+                    routing::dijkstra_path(&topo, t, &neighbours_snap)
+                }
+                None => None,
+            };
+            *route.lock().await = new_route;
+
+            info!(
+                "Button: target={:?} reachable={}",
+                next_target,
+                route.lock().await.is_some()
+            );
+        }
+
+        button.wait_for_rising_edge().await;
+        led.set_high(); // LED off on release
+
+        // suppress unused warning when own_mac is only used in the node filter
+        let _ = own_mac;
+    }
+}
+
 #[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn update_screen(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+    route: &'static Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>>,
     mut terminal: Option<screen::ScreenTerminal<'static, I2c<'static, Blocking>>>,
 ) {
     loop {
@@ -319,9 +391,12 @@ async fn update_screen(
         let id = node_state.mac;
         drop(node_state);
 
+        let path = route.lock().await;
         if let Some(ref mut terminal) = terminal {
-            screen::render_mds(terminal, &macs, &distances, &mds, &id);
+            screen::render_mds(terminal, &macs, &distances, &mds, &id, path.as_ref());
         }
+        drop(path);
+
         Timer::after_millis(300).await;
     }
 }
@@ -402,9 +477,7 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let esp_now = interfaces.esp_now;
 
-    // On board status led
-    let mut led =
-        esp_hal::gpio::Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+    let led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
     let button = Input::new(peripherals.GPIO9, InputConfig::default().with_pull(Pull::Up));
 
     let i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
@@ -439,6 +512,9 @@ async fn main(spawner: embassy_executor::Spawner) {
     let topology: &'static Mutex<CriticalSectionRawMutex, Topology> =
         TC_TOPOLOGY.init(Mutex::new(Topology::new(mac)));
 
+    let route: &'static Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>> =
+        ROUTE.init(Mutex::new(None));
+
     // Spawn tasks
     spawner.spawn(tx_task(tx).unwrap());
     spawner.spawn(broadcast_hello(state).unwrap());
@@ -448,7 +524,8 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(calculate_state(state, perf, topology).unwrap());
     spawner.spawn(expire_stale_neighbors(state).unwrap());
     spawner.spawn(publish_metrics(perf).unwrap());
-    spawner.spawn(update_screen(state, terminal).unwrap());
+    spawner.spawn(button_task(button, led, state, topology, route).unwrap());
+    spawner.spawn(update_screen(state, route, terminal).unwrap());
 
     if mqtt_enabled {
         let topic = alloc::format!("telemetry/{ID}");
@@ -481,11 +558,7 @@ async fn main(spawner: embassy_executor::Spawner) {
             });
 
             loop {
-                if button.is_low() {
-                    led.set_low();
-                } else {
-                    led.set_high();
-                }
+
                 // The display is rendered by the `update_screen` task; here we just log
                 // the current state for debugging.
                 {
@@ -532,11 +605,6 @@ async fn main(spawner: embassy_executor::Spawner) {
         }
     } else {
         loop {
-            if button.is_low() {
-                led.set_low();
-            } else {
-                led.set_high();
-            }
             {
                 let topo = topology.lock().await;
                 info!("topology:\n{}", defmt::Debug2Format(topo.topology_table()));
