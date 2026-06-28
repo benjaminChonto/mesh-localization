@@ -175,19 +175,16 @@ fn draw_mds(
     let other_labels = &visible_labels[..count];
 
     // Resolve target index + direct distance for labelling and bounds
-    let target_info: Option<(usize, f32)> = path
-        .and_then(|p| p.last())
-        .and_then(|&tgt_mac| {
-            let idx = macs.iter().position(|&m| m == tgt_mac)?;
-            let dist = if current_node_index < distances.len()
-                && idx < distances[current_node_index].len()
-            {
+    let target_info: Option<(usize, f32)> = path.and_then(|p| p.last()).and_then(|&tgt_mac| {
+        let idx = macs.iter().position(|&m| m == tgt_mac)?;
+        let dist =
+            if current_node_index < distances.len() && idx < distances[current_node_index].len() {
                 distances[current_node_index][idx].to_num::<f32>()
             } else {
                 0.0
             };
-            Some((idx, dist))
-        });
+        Some((idx, dist))
+    });
 
     let title = match target_info {
         Some((idx, _)) => format!("MDS {} →{}", macs.len(), idx),
