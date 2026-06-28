@@ -108,6 +108,49 @@ def fit_path_loss(dist: np.ndarray, rssi: np.ndarray) -> dict:
     return {"A": intercept, "N": -slope / 10.0, "r2": r2}
 
 
+def n_accuracy_sweep(env: str, sub: pd.DataFrame, fit: dict, out_dir: str,
+                     n_grid: np.ndarray | None = None) -> dict:
+    """Sweep N and, for each, pick the A that minimizes DISTANCE error, then
+    plot distance-RMSE vs N. Answers "which N gives the most accurate distance"
+    directly in metres (the regression N minimizes RSSI error, which can differ).
+
+    For a fixed N the estimate is d_est = C * 10^(-mean_rssi/(10N)) where
+    C = 10^(A/(10N)); the optimal scale C (hence A) has a closed form per N.
+    """
+    if n_grid is None:
+        n_grid = np.linspace(1.5, 5.0, 71)
+    means = sub.groupby("dist")["rssi"].mean()
+    d = means.index.to_numpy(float)
+    r = means.to_numpy(float)
+
+    rmse = np.empty_like(n_grid)
+    for i, N in enumerate(n_grid):
+        g = np.power(10.0, -r / (10.0 * N))
+        C = np.sum(g * d) / np.sum(g * g)          # optimal scale -> optimal A
+        rmse[i] = np.sqrt(np.mean((C * g - d) ** 2))
+    bi = int(np.argmin(rmse))
+    best_N = float(n_grid[bi])
+    g = np.power(10.0, -r / (10.0 * best_N))
+    best_A = 10.0 * best_N * np.log10(np.sum(g * d) / np.sum(g * g))
+
+    safe = re.sub(r"[^0-9a-zA-Z._-]+", "_", env)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(n_grid, rmse, "-")
+    ax.axvline(best_N, color="red", ls="-",
+               label=f"distance-optimal N={best_N:.2f} (RMSE={rmse[bi]:.2f}m)")
+    ax.axvline(fit["N"], color="blue", ls="--", label=f"regression N={fit['N']:.2f}")
+    ax.axvline(FIRMWARE_N, color="green", ls=":", label=f"firmware N={FIRMWARE_N}")
+    ax.set_xlabel("path-loss exponent N")
+    ax.set_ylabel("distance RMSE over per-dist means (m)")
+    ax.set_title(f"Distance accuracy vs N — env={env}")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, f"n-sweep-{safe}.png"), dpi=120)
+    plt.close(fig)
+    return {"N": best_N, "A": best_A, "rmse": float(rmse[bi])}
+
+
 def plot_env(env: str, sub: pd.DataFrame, fit: dict, out_dir: str) -> None:
     safe = re.sub(r"[^0-9a-zA-Z._-]+", "_", env)
 
@@ -194,16 +237,21 @@ def main() -> None:
         print(f"\nNote: {df['src'].nunique()} distinct src MACs present — RSSI is "
               "per-link asymmetric. Re-run with --by-src to separate them.")
 
-    # Per-environment A/N fit + plots.
+    # Per-environment A/N fit + plots. Two N estimates per env:
+    #  - regression N (least-squares in RSSI space)
+    #  - distance-optimal N (minimises distance RMSE; the N sweep plot)
     print("\nPath-loss fit  (rssi = A - 10*N*log10(d)):")
-    print(f"{'env':<12}{'A (rssi@1m)':>14}{'N':>8}{'R^2':>8}{'n':>10}")
+    print(f"{'env':<12}{'A (rssi@1m)':>13}{'N (fit)':>9}{'R^2':>7}"
+          f"{'N (best dist)':>15}{'A (best)':>10}{'dRMSE m':>9}{'n':>8}")
     for env, sub in df.groupby("env"):
         if sub["dist"].nunique() < 2:
             print(f"{env:<12}{'(need >=2 distances to fit)':>40}")
             continue
         fit = fit_path_loss(sub["dist"].to_numpy(), sub["rssi"].to_numpy())
-        print(f"{env:<12}{fit['A']:>14.2f}{fit['N']:>8.2f}{fit['r2']:>8.3f}{len(sub):>10}")
         plot_env(env, sub, fit, args.out_dir)
+        best = n_accuracy_sweep(env, sub, fit, args.out_dir)
+        print(f"{env:<12}{fit['A']:>13.2f}{fit['N']:>9.2f}{fit['r2']:>7.3f}"
+              f"{best['N']:>15.2f}{best['A']:>10.2f}{best['rmse']:>9.2f}{len(sub):>8}")
 
     print(f"\nFirmware currently uses A={FIRMWARE_A:.0f}, N={FIRMWARE_N} "
           "(esp32-firmware/build.rs). Compare against the fitted values above.")
