@@ -17,9 +17,9 @@ fn generate_rssi_table() {
     code.push_str("pub const RSSI_TO_DIST_BITS: [i32; 256] = [\n");
     for rssi in -128i32..=127 {
         let exponent = (-56.0f64 - rssi as f64) / 25.0;
-        let dist = 10.0f64.powf(exponent).min(32767.0).max(0.0);
+        let dist = 10.0f64.powf(exponent).clamp(0.0, 32767.0);
         let bits = (dist * 65536.0).round() as i32;
-        let _ = write!(code, "    {bits},\n");
+        let _ = writeln!(code, "    {bits},");
     }
     code.push_str("];\n");
 

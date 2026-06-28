@@ -276,18 +276,15 @@ fn draw_table(
 
     // Take 2 closest; append target if not already present
     let mut shown: alloc::vec::Vec<(usize, I16F16)> = candidates.iter().take(2).copied().collect();
-    if let Some(tgt) = target_mac {
-        if let Some(tgt_idx) = macs.iter().position(|&m| m == tgt) {
-            if !shown.iter().any(|&(i, _)| i == tgt_idx) {
-                if let Some(&dist) = candidates
-                    .iter()
-                    .find(|&&(i, _)| i == tgt_idx)
-                    .map(|(_, d)| d)
-                {
-                    shown.push((tgt_idx, dist));
-                }
-            }
-        }
+    if let Some(tgt) = target_mac
+        && let Some(tgt_idx) = macs.iter().position(|&m| m == tgt)
+        && !shown.iter().any(|&(i, _)| i == tgt_idx)
+        && let Some(&dist) = candidates
+            .iter()
+            .find(|&&(i, _)| i == tgt_idx)
+            .map(|(_, d)| d)
+    {
+        shown.push((tgt_idx, dist));
     }
 
     let rows: alloc::vec::Vec<Row> = shown
