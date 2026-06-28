@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use crate::state::{MAX_SWARM_SIZE, State};
+use defmt::info;
 use embassy_time::Instant;
 use fixed::types::I16F16;
 use hashbrown::HashMap;
@@ -102,6 +103,19 @@ impl Topology {
         }
         self.topology_table
             .insert(mac, (neighbors, sequence, Instant::now()));
+    }
+
+    pub fn log_topology(&self, macs: &Vec<[u8; 6], MAX_SWARM_SIZE>) {
+        let idx_of = |m: &[u8; 6]| -> isize {
+            macs.iter().position(|x| x == m).map(|i| i as isize).unwrap_or(-1)
+        };
+        info!("topology ({} entries):", self.topology_table.len());
+        for (origin, (neighbors, seq, _)) in &self.topology_table {
+            let oi = idx_of(origin);
+            let ni: Vec<isize, MAX_SWARM_SIZE> =
+                neighbors.iter().map(|n| idx_of(n)).collect();
+            info!("  node {} (seq {}) -> {}", oi, seq, defmt::Debug2Format(&ni));
+        }
     }
 
     pub fn expire_stale(&mut self) {

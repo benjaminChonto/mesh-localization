@@ -612,17 +612,18 @@ async fn main(spawner: embassy_executor::Spawner) {
             'connected: loop {
                 // The display is rendered by the `update_screen` task; here we just log
                 // the current state for debugging.
-                {
-                    let topo = topology.lock().await;
-                    info!("topology:\n{}", defmt::Debug2Format(topo.topology_table()));
-                }
-                {
+                let macs = {
                     let node_state = state.lock().await;
                     info!(
                         "neighbours:\n{}\nmds:\n{}",
                         defmt::Debug2Format(&node_state.neighbour_matrix()),
                         defmt::Debug2Format(&node_state.mds)
                     );
+                    node_state.get_ordered_mac_addresses()
+                };
+                {
+                    let topo = topology.lock().await;
+                    topo.log_topology(&macs);
                 }
 
                 // drain message to server queue
@@ -656,17 +657,18 @@ async fn main(spawner: embassy_executor::Spawner) {
         }
     } else {
         loop {
-            {
-                let topo = topology.lock().await;
-                info!("topology:\n{}", defmt::Debug2Format(topo.topology_table()));
-            }
-            {
+            let macs = {
                 let node_state = state.lock().await;
                 info!(
                     "neighbours:\n{}\nmds:\n{}",
                     defmt::Debug2Format(&node_state.neighbour_matrix()),
                     defmt::Debug2Format(&node_state.mds)
                 );
+                node_state.get_ordered_mac_addresses()
+            };
+            {
+                let topo = topology.lock().await;
+                topo.log_topology(&macs);
             }
             Timer::after(Duration::from_secs(1)).await;
         }
