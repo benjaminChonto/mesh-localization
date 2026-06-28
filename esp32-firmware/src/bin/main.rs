@@ -256,7 +256,7 @@ async fn process_packet(
                 );
                 let finish = cpu_cycles().wrapping_sub(start_cycles);
                 {
-                    perf.lock().await.process_packet_hello_cycles = finish;
+                    perf.lock().await.process_packet_topo_cycles = finish;
                 }
 
                 if forward && let Ok(msg) = postcard::to_slice(&Packet::Tc(tc), &mut fwd_buf) {
@@ -439,6 +439,7 @@ async fn button_task(
 #[embassy_executor::task]
 async fn update_screen(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+    perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
     route: &'static Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>>,
     screen_mode: &'static Mutex<CriticalSectionRawMutex, screen::ScreenMode>,
     mut terminal: Option<screen::ScreenTerminal<'static, I2c<'static, Blocking>>>,
@@ -458,10 +459,20 @@ async fn update_screen(
         if let Some(ref mut terminal) = terminal {
             match mode {
                 screen::ScreenMode::Mds => {
+                    let start = cpu_cycles();
                     screen::render_mds(terminal, &macs, &distances, &mds, &id, path.as_ref());
+                    let finish = cpu_cycles().wrapping_sub(start);
+                    {
+                        perf.lock().await.update_screen_mds_cycles = finish;
+                    }
                 }
                 screen::ScreenMode::Table => {
+                    let start = cpu_cycles();
                     screen::render_table(terminal, &macs, &distances, &id, target_mac);
+                    let finish = cpu_cycles().wrapping_sub(start);
+                    {
+                        perf.lock().await.update_screen_table_cycles = finish;
+                    }
                 }
             }
         }
@@ -601,7 +612,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(expire_stale_neighbors(state).unwrap());
     spawner.spawn(publish_metrics(perf).unwrap());
     spawner.spawn(button_task(button, led, state, topology, route, screen_mode).unwrap());
-    spawner.spawn(update_screen(state, route, screen_mode, terminal).unwrap());
+    spawner.spawn(update_screen(state, perf, route, screen_mode, terminal).unwrap());
 
     if mqtt_enabled {
         let topic = alloc::format!("telemetry/{ID}");
