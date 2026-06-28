@@ -85,6 +85,7 @@ serde = { version = "1.0", default-features = false, features = [
   "alloc",
 ] }
 embassy-futures = "0.1.2"
+fixed_trigonometry = "0.4.4"
 
 
 [profile.dev]

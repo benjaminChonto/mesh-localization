@@ -4,7 +4,8 @@ use heapless::Vec;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_SWARM_SIZE: usize = 10;
-pub type MdsResult = Vec<Vec<I16F16, 2>, MAX_SWARM_SIZE>;
+pub type NodePosition = Vec<I16F16, 2>;
+pub type MdsResult = Vec<NodePosition, MAX_SWARM_SIZE>;
 
 /// CPU clock the firmware runs at (ESP32-C3 at `CpuClock::max()` == 160 MHz).
 /// Single source of truth for converting raw CPU cycle counts to wall-clock time.

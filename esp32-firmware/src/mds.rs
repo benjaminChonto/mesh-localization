@@ -2,11 +2,14 @@ use crate::kabsch;
 use crate::state::MAX_SWARM_SIZE;
 use esp_hal::rng::Rng;
 use fixed::types::I16F16;
+use fixed_trigonometry::{atan::atan2, cos, sin};
 use heapless::Vec;
-use shared::MdsResult;
+use serde::de::Unexpected::Map;
+use shared::{MdsResult, NodePosition};
 
 // TODO: find highest acceptable value
 const MDS_ITERATIONS: usize = 50;
+const SQUARED_DISTANCE_THRESHOLD: usize = 4; // 2meters
 
 #[derive(Default)]
 pub struct MDS {
@@ -90,6 +93,7 @@ impl MDS {
         // await point and bloats this task's future.
         if !reinitialized && self.prev.len() == n {
             self.X = kabsch::align(&self.X, &self.prev);
+            self.X = self.orient_direction()
         }
 
         // Pin this device's own node at the origin, so the configuration is
@@ -108,7 +112,50 @@ impl MDS {
 
         &self.X
     }
+
+
+    fn orient_direction(&self) -> MdsResult {
+        // todo get macs and id
+        let current_idx = macs.iter().position(|&mac| mac == *id).unwrap_or(0);
+        let previous_poz: &NodePosition = self.prev.get(current_idx).expect("Current index should not be missing from previous positions");
+        let current_poz: &NodePosition = self.X.get(current_idx).expect("Current index should not be missing from previous positions");
+
+        let diff: NodePosition = current_poz.iter()
+            .zip(previous_poz)
+            .map(|(current, previous)| {
+                current - previous
+            }).collect();
+        if diff[0] * diff[0] + diff[1] * diff[1] < SQUARED_DISTANCE_THRESHOLD {
+            return self.X
+        }
+
+        // calculate angle
+        // sin(theta) = y / (x^2 + y^2)
+        // theta = arcsin( y / (x^2 + y*2))
+        let theta = atan2(diff[1], diff[0]);
+
+        let cos_theta = cos(theta);
+        let sin_theta = sin(theta);
+        let rotation_vector = Vec::from([
+            diff[0] * cos_theta - diff[1] * sin_theta,
+            diff[0] * sin_theta + diff[1] * cos_theta
+        ]);
+
+        self.X.iter().map(|poz| {
+            // return x * cos(theta) - y * sin(theta)
+            //        x * sin(theta) + y * cos(theta)
+            Vec::from([
+                rotation_vector[0] * poz[0],
+                rotation_vector[1] * poz[1]
+            ])
+        }).collect()
+
+    }
+
 }
+
+
+
 
 fn make_symmetric(
     mut d: Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
