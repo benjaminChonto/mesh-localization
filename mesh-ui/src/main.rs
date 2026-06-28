@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap, VecDeque},
     fs::{self, File},
     io::{self, BufWriter, Write},
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -12,79 +11,18 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Style, Stylize},
     symbols::Marker,
-    widgets::{Axis, Block, Chart, Dataset, GraphType, Paragraph, Row, Table},
+    widgets::{Axis, Block, Chart, Dataset, GraphType, Paragraph},
 };
 use rumqttc::{Client, Event, Incoming, MqttOptions, QoS};
-use shared::{MdsResult, PerformanceMetrics, TelemetryMessage};
-
-const MOVING_AVG_WINDOW: usize = 20;
-
-struct MovingAvg {
-    buf: VecDeque<u32>,
-}
-
-impl MovingAvg {
-    fn new() -> Self {
-        Self {
-            buf: VecDeque::new(),
-        }
-    }
-
-    fn push(&mut self, value: u32) {
-        if self.buf.len() >= MOVING_AVG_WINDOW {
-            self.buf.pop_front();
-        }
-        self.buf.push_back(value);
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    fn avg(&self) -> f64 {
-        if self.buf.is_empty() {
-            return 0.0;
-        }
-        self.buf.iter().sum::<u32>() as f64 / self.buf.len() as f64
-    }
-}
-
-struct NodePerfState {
-    latest: PerformanceMetrics,
-    broadcast_avg: MovingAvg,
-    process_avg: MovingAvg,
-    calculate_avg: MovingAvg,
-}
-
-impl NodePerfState {
-    fn new(metrics: PerformanceMetrics) -> Self {
-        let mut state = Self {
-            latest: metrics,
-            broadcast_avg: MovingAvg::new(),
-            process_avg: MovingAvg::new(),
-            calculate_avg: MovingAvg::new(),
-        };
-        state.update(metrics);
-        state
-    }
-
-    fn update(&mut self, metrics: PerformanceMetrics) {
-        self.latest = metrics;
-        self.broadcast_avg.push(metrics.broadcast_clone_dist_cycles);
-        self.process_avg.push(metrics.process_packet_cycles);
-        self.calculate_avg.push(metrics.calculate_state_cycles);
-    }
-}
+use shared::{MdsResult, TelemetryMessage};
 
 enum UiEvent {
     Positions(MdsResult),
-    Perf {
-        node_id: String,
-        metrics: PerformanceMetrics,
-    },
     Error(String),
 }
 
 struct AppState {
     positions: Option<MdsResult>,
-    perf_nodes: HashMap<String, NodePerfState>,
     status: String,
 }
 
@@ -92,7 +30,6 @@ impl AppState {
     fn new() -> Self {
         Self {
             positions: None,
-            perf_nodes: HashMap::new(),
             status: "Waiting for data...".to_string(),
         }
     }
@@ -101,12 +38,6 @@ impl AppState {
         match event {
             UiEvent::Positions(pos) => {
                 self.positions = Some(pos);
-            }
-            UiEvent::Perf { node_id, metrics } => {
-                self.perf_nodes
-                    .entry(node_id)
-                    .and_modify(|s| s.update(metrics))
-                    .or_insert_with(|| NodePerfState::new(metrics));
             }
             UiEvent::Error(msg) => {
                 self.status = msg;
@@ -122,45 +53,63 @@ fn unix_millis() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
-/// Appends every received performance sample to a CSV file so runs can be
-/// analyzed offline (e.g. with pandas/Excel). Each row carries both the raw
-/// CPU cycle counts (the precise on-chip measurement) and their microsecond
-/// equivalents derived from the firmware clock rate.
-struct PerfCsvLogger {
-    writer: BufWriter<File>,
-    path: String,
+/// Reads an `I16F16` fixed-point value out of its raw bit pattern without
+/// pulling in the `fixed` crate: the raw bits divided by 2^16 give the float.
+fn fixed_to_f64(value: shared::I16F16) -> f64 {
+    f64::from(value.to_bits()) / 65536.0
 }
 
-impl PerfCsvLogger {
+/// Appends every MDS solution (the estimated node layout produced by node 0)
+/// to a CSV file so runs can be reproduced offline with `scripts/plot_mds.py`.
+///
+/// The log is in long format -- one row per node per frame -- which pandas and
+/// numpy slice trivially:
+///
+/// ```text
+/// unix_ms,frame,node_idx,x,y
+/// ```
+///
+/// `frame` is a monotonic counter (one per received MDS message) so individual
+/// solutions can be separated even when two land in the same millisecond.
+struct MdsCsvLogger {
+    writer: BufWriter<File>,
+    path: String,
+    frame: u64,
+}
+
+impl MdsCsvLogger {
     fn new() -> io::Result<Self> {
         // Ensure the log directory exists; `File::create` does not create parents.
         fs::create_dir_all("logs")?;
-        let path = format!("logs/perf-log-{}.csv", unix_millis());
+        let path = format!("logs/mds-log-{}.csv", unix_millis());
         let mut writer = BufWriter::new(File::create(&path)?);
-        writeln!(
-            writer,
-            "unix_ms,node_id,broadcast_clone_dist_cycles,process_packet_cycles,\
-             calculate_state_cycles,broadcast_clone_dist_ns,process_packet_ns,calculate_state_ns"
-        )?;
+        writeln!(writer, "unix_ms,frame,node_idx,x,y")?;
         writer.flush()?;
-        Ok(Self { writer, path })
+        Ok(Self {
+            writer,
+            path,
+            frame: 0,
+        })
     }
 
-    fn log(&mut self, node_id: &str, m: &PerformanceMetrics) -> io::Result<()> {
-        writeln!(
-            self.writer,
-            "{},{},{},{},{},{:.3},{:.3},{:.3}",
-            unix_millis(),
-            node_id,
-            m.broadcast_clone_dist_cycles,
-            m.process_packet_cycles,
-            m.calculate_state_cycles,
-            cycles_to_ns(m.broadcast_clone_dist_cycles as f64),
-            cycles_to_ns(m.process_packet_cycles as f64),
-            cycles_to_ns(m.calculate_state_cycles as f64),
-        )?;
-        // Flush every row: samples arrive slowly (~20/s) and we don't want to
-        // lose data if the UI is killed with Ctrl-C.
+    fn log(&mut self, positions: &MdsResult) -> io::Result<()> {
+        let ts = unix_millis();
+        for (node_idx, p) in positions.iter().enumerate() {
+            if p.len() == 2 {
+                writeln!(
+                    self.writer,
+                    "{},{},{},{:.6},{:.6}",
+                    ts,
+                    self.frame,
+                    node_idx,
+                    fixed_to_f64(p[0]),
+                    fixed_to_f64(p[1]),
+                )?;
+            }
+        }
+        self.frame += 1;
+        // Flush every frame: solutions arrive slowly and we don't want to lose
+        // data if the UI is killed with Ctrl-C.
         self.writer.flush()
     }
 }
@@ -172,15 +121,15 @@ fn read_mqtt(tx: &Sender<UiEvent>) {
         eprintln!("Could not subscribe: {e}");
     }
 
-    // Best-effort CSV logging of performance samples; if the file can't be
-    // opened we still run the UI, just without persisting metrics.
-    let mut csv_logger = match PerfCsvLogger::new() {
+    // Best-effort CSV logging of MDS solutions; if the file can't be opened we
+    // still run the UI, just without persisting the layouts.
+    let mut csv_logger = match MdsCsvLogger::new() {
         Ok(logger) => {
-            let _ = tx.send(UiEvent::Error(format!("Logging perf to {}", logger.path)));
+            let _ = tx.send(UiEvent::Error(format!("Logging MDS to {}", logger.path)));
             Some(logger)
         }
         Err(e) => {
-            let _ = tx.send(UiEvent::Error(format!("Could not open perf CSV log: {e}")));
+            let _ = tx.send(UiEvent::Error(format!("Could not open MDS CSV log: {e}")));
             None
         }
     };
@@ -191,17 +140,15 @@ fn read_mqtt(tx: &Sender<UiEvent>) {
                 let node_id = packet.topic.split('/').nth(1).unwrap_or("?").to_string();
                 match postcard::from_bytes::<TelemetryMessage<'_>>(packet.payload.as_ref()) {
                     Ok(TelemetryMessage::Mds(positions)) if node_id == "0" => {
+                        if let Some(logger) = csv_logger.as_mut()
+                            && let Err(e) = logger.log(&positions)
+                        {
+                            eprintln!("MDS CSV write failed: {e}");
+                        }
                         let _ = tx.send(UiEvent::Positions(positions));
                     }
                     Ok(TelemetryMessage::Mds(_)) => {}
-                    Ok(TelemetryMessage::Perf(metrics)) => {
-                        if let Some(logger) = csv_logger.as_mut()
-                            && let Err(e) = logger.log(&node_id, &metrics)
-                        {
-                            eprintln!("perf CSV write failed: {e}");
-                        }
-                        let _ = tx.send(UiEvent::Perf { node_id, metrics });
-                    }
+                    Ok(TelemetryMessage::Perf(_)) => {}
                     Ok(TelemetryMessage::Log { .. }) => {}
                     Err(e) => {
                         let _ = tx.send(UiEvent::Error(format!("Decode error: {e}")));
@@ -248,16 +195,11 @@ fn app(terminal: &mut DefaultTerminal, rx: &Receiver<UiEvent>) -> std::io::Resul
 }
 
 fn render(frame: &mut Frame, state: &AppState) {
-    let [chart_area, bottom_area] =
-        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
+    let [chart_area, status_area] =
+        Layout::vertical([Constraint::Percentage(80), Constraint::Percentage(20)])
             .areas(frame.area());
 
-    let [perf_area, status_area] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .areas(bottom_area);
-
     render_chart(frame, state.positions.as_ref(), chart_area);
-    render_perf(frame, &state.perf_nodes, perf_area);
     render_status(frame, &state.status, status_area);
 }
 
@@ -275,10 +217,7 @@ fn render_chart(frame: &mut Frame, positions: Option<&MdsResult>, area: ratatui:
         .iter()
         .filter_map(|p| {
             if p.len() == 2 {
-                // I16F16 raw bits / 65536 gives the float value without needing the fixed crate
-                let x = p[0].to_bits() as f64 / 65536.0;
-                let y = p[1].to_bits() as f64 / 65536.0;
-                Some((x, y))
+                Some((fixed_to_f64(p[0]), fixed_to_f64(p[1])))
             } else {
                 None
             }
@@ -317,65 +256,6 @@ fn render_chart(frame: &mut Frame, positions: Option<&MdsResult>, area: ratatui:
         .y_axis(Axis::default().title("Y".blue()).bounds(y_bounds));
 
     frame.render_widget(chart, area);
-}
-
-fn cycles_to_ns(cycles: f64) -> f64 {
-    cycles / (shared::CPU_CLOCK_HZ as f64 / 1_000_000_000.0)
-}
-
-fn time_display(current: u32, avg: f64) -> String {
-    // Compute in nanoseconds for precision, then display as milliseconds (3 dp).
-    format!(
-        "{:.3}ms / {:.3}ms",
-        cycles_to_ns(current as f64) / 1_000_000.0,
-        cycles_to_ns(avg) / 1_000_000.0
-    )
-}
-
-fn render_perf(
-    frame: &mut Frame,
-    nodes: &HashMap<String, NodePerfState>,
-    area: ratatui::layout::Rect,
-) {
-    let block = Block::bordered().title("Performance (cur / 20-sample avg)");
-
-    if nodes.is_empty() {
-        frame.render_widget(Paragraph::new("No nodes yet").block(block), area);
-        return;
-    }
-
-    let mut node_ids: Vec<&str> = nodes.keys().map(String::as_str).collect();
-    node_ids.sort_unstable();
-
-    let header = Row::new([
-        "Node",
-        "broadcast_clone",
-        "process_packet",
-        "calculate_state",
-    ])
-    .style(Style::new().bold());
-
-    let rows: Vec<Row> = node_ids
-        .iter()
-        .map(|id| {
-            let s = &nodes[*id];
-            Row::new([
-                (*id).to_string(),
-                time_display(s.latest.broadcast_clone_dist_cycles, s.broadcast_avg.avg()),
-                time_display(s.latest.process_packet_cycles, s.process_avg.avg()),
-                time_display(s.latest.calculate_state_cycles, s.calculate_avg.avg()),
-            ])
-        })
-        .collect();
-
-    let widths = [
-        Constraint::Length(6),
-        Constraint::Fill(1),
-        Constraint::Fill(1),
-        Constraint::Fill(1),
-    ];
-
-    frame.render_widget(Table::new(rows, widths).header(header).block(block), area);
 }
 
 fn render_status(frame: &mut Frame, status: &str, area: ratatui::layout::Rect) {
