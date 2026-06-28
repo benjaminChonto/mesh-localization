@@ -67,9 +67,9 @@ impl NodePerfState {
 
     fn update(&mut self, metrics: PerformanceMetrics) {
         self.latest = metrics;
-        self.broadcast_avg.push(metrics.broadcast_clone_dist_cycles);
-        self.process_avg.push(metrics.process_packet_cycles);
-        self.calculate_avg.push(metrics.calculate_state_cycles);
+        self.broadcast_avg.push(metrics.broadcast_hello_cycles);
+        self.process_avg.push(metrics.process_packet_hello_cycles);
+        self.calculate_avg.push(metrics.calc_state_mds_total_cycles);
     }
 }
 
@@ -139,8 +139,19 @@ impl PerfCsvLogger {
         let mut writer = BufWriter::new(File::create(&path)?);
         writeln!(
             writer,
-            "unix_ms,node_id,broadcast_clone_dist_cycles,process_packet_cycles,\
-             calculate_state_cycles,broadcast_clone_dist_ns,process_packet_ns,calculate_state_ns"
+            "unix_ms,node_id,\
+             broadcast_hello_cycles,broadcast_topo_cycles,\
+             process_packet_hello_cycles,process_packet_topo_cycles,\
+             calc_state_mds_total_cycles,calc_state_kabsch_cycles,\
+             calc_state_mds_iter_cycles,calc_state_routing_update_cycles,\
+             calc_state_build_neighbors_cycles,\
+             update_screen_mds_cycles,update_screen_table_cycles,\
+             broadcast_hello_ns,broadcast_topo_ns,\
+             process_packet_hello_ns,process_packet_topo_ns,\
+             calc_state_mds_total_ns,calc_state_kabsch_ns,\
+             calc_state_mds_iter_ns,calc_state_routing_update_ns,\
+             calc_state_build_neighbors_ns,\
+             update_screen_mds_ns,update_screen_table_ns"
         )?;
         writer.flush()?;
         Ok(Self { writer, path })
@@ -149,15 +160,33 @@ impl PerfCsvLogger {
     fn log(&mut self, node_id: &str, m: &PerformanceMetrics) -> io::Result<()> {
         writeln!(
             self.writer,
-            "{},{},{},{},{},{:.3},{:.3},{:.3}",
+            "{},{},\
+             {},{},{},{},{},{},{},{},{},{},{},\
+             {:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
             unix_millis(),
             node_id,
-            m.broadcast_clone_dist_cycles,
-            m.process_packet_cycles,
-            m.calculate_state_cycles,
-            cycles_to_ns(m.broadcast_clone_dist_cycles as f64),
-            cycles_to_ns(m.process_packet_cycles as f64),
-            cycles_to_ns(m.calculate_state_cycles as f64),
+            m.broadcast_hello_cycles,
+            m.broadcast_topo_cycles,
+            m.process_packet_hello_cycles,
+            m.process_packet_topo_cycles,
+            m.calc_state_mds_total_cycles,
+            m.calc_state_kabsch_cycles,
+            m.calc_state_mds_iter_cycles,
+            m.calc_state_routing_update_cycles,
+            m.calc_state_build_neighbors_cycles,
+            m.update_screen_mds_cycles,
+            m.update_screen_table_cycles,
+            cycles_to_ns(m.broadcast_hello_cycles as f64),
+            cycles_to_ns(m.broadcast_topo_cycles as f64),
+            cycles_to_ns(m.process_packet_hello_cycles as f64),
+            cycles_to_ns(m.process_packet_topo_cycles as f64),
+            cycles_to_ns(m.calc_state_mds_total_cycles as f64),
+            cycles_to_ns(m.calc_state_kabsch_cycles as f64),
+            cycles_to_ns(m.calc_state_mds_iter_cycles as f64),
+            cycles_to_ns(m.calc_state_routing_update_cycles as f64),
+            cycles_to_ns(m.calc_state_build_neighbors_cycles as f64),
+            cycles_to_ns(m.update_screen_mds_cycles as f64),
+            cycles_to_ns(m.update_screen_table_cycles as f64),
         )?;
         // Flush every row: samples arrive slowly (~20/s) and we don't want to
         // lose data if the UI is killed with Ctrl-C.
@@ -361,9 +390,9 @@ fn render_perf(
             let s = &nodes[*id];
             Row::new([
                 (*id).to_string(),
-                time_display(s.latest.broadcast_clone_dist_cycles, s.broadcast_avg.avg()),
-                time_display(s.latest.process_packet_cycles, s.process_avg.avg()),
-                time_display(s.latest.calculate_state_cycles, s.calculate_avg.avg()),
+                time_display(s.latest.broadcast_hello_cycles, s.broadcast_avg.avg()),
+                time_display(s.latest.process_packet_hello_cycles, s.process_avg.avg()),
+                time_display(s.latest.calc_state_mds_total_cycles, s.calculate_avg.avg()),
             ])
         })
         .collect();

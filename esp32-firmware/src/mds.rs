@@ -1,12 +1,14 @@
-use crate::kabsch;
 use crate::state::MAX_SWARM_SIZE;
+use crate::{kabsch, utils::cpu_cycles};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use esp_hal::rng::Rng;
 use fixed::types::I16F16;
 use heapless::Vec;
-use shared::MdsResult;
+use shared::{MdsResult, PerformanceMetrics};
 
 // TODO: find highest acceptable value
-const MDS_ITERATIONS: usize = 50;
+const MDS_ITERATIONS: usize = 25;
 
 #[derive(Default)]
 pub struct MDS {
@@ -39,6 +41,7 @@ impl MDS {
         &mut self,
         d: Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
         anchor: Option<usize>,
+        perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
     ) -> &MdsResult {
         let D = make_symmetric(d);
         let n = D.len();
@@ -49,10 +52,10 @@ impl MDS {
             self.X = initialize_mds(n);
         }
 
+        let start_iter = cpu_cycles();
         for _ in 0..MDS_ITERATIONS {
-            // Yield at the top of the loop so the large per-iteration scratch
-            // matrices (`dist`, `B`) are not live across this await point
-            embassy_futures::yield_now().await;
+            // DO NOT YIELD - benchmarking
+            //embassy_futures::yield_now().await;
             let dist = pairwise_distances(&self.X);
             let mut B: Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE> = Vec::new();
 
@@ -83,13 +86,21 @@ impl MDS {
                 .collect();
             self.X = subtract_mean(&self.X);
         }
+        let finish_iter = cpu_cycles().wrapping_sub(start_iter);
 
         // Orient the new solution to match the previous one (rotation +
         // translation, no scaling), then remember it as the next reference.
-        // Done after the SMACOF loop so the alignment scratch never crosses an
-        // await point and bloats this task's future.
         if !reinitialized && self.prev.len() == n {
+            let start = cpu_cycles();
             self.X = kabsch::align(&self.X, &self.prev);
+            let finish = cpu_cycles().wrapping_sub(start);
+            {
+                perf.lock().await.calc_state_kabsch_cycles = finish;
+            }
+        }
+
+        {
+            perf.lock().await.calc_state_mds_iter_cycles = finish_iter;
         }
 
         // Pin this device's own node at the origin, so the configuration is

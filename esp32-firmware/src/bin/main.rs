@@ -92,7 +92,10 @@ async fn tx_task(mut tx: EspNowSender<'static>) {
 }
 
 #[embassy_executor::task]
-async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeState>) {
+async fn broadcast_hello(
+    state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
+    perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
+) {
     loop {
         // Measure in raw CPU cycles for maximum precision (see `cpu_cycles`).
         let start_cycles = cpu_cycles();
@@ -101,7 +104,7 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
             let node_state = state.lock().await;
             node_state.neighbours.get(&node_state.mac).cloned()
         };
-        let _finish = cpu_cycles().wrapping_sub(start_cycles);
+        let finish = cpu_cycles().wrapping_sub(start_cycles);
 
         let packet = Packet::Hello(distances.unwrap_or_default());
         let mut data = [0u8; 256];
@@ -118,6 +121,10 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
             warn!("Hello dropped: TX channel full");
         }
 
+        {
+            perf.lock().await.broadcast_hello_cycles = finish;
+        }
+
         Timer::after_millis(1000).await;
     }
 }
@@ -126,11 +133,13 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
 async fn broadcast_tc(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
     topology: &'static Mutex<CriticalSectionRawMutex, Topology>,
+    perf: &'static Mutex<CriticalSectionRawMutex, PerformanceMetrics>,
 ) {
     use esp32_firmware::state::MAX_SWARM_SIZE;
     loop {
         Timer::after(Duration::from_secs(5)).await;
 
+        let start = cpu_cycles();
         let neighbors: Vec<[u8; 6], MAX_SWARM_SIZE> = {
             let node_state = state.lock().await;
             node_state
@@ -147,6 +156,11 @@ async fn broadcast_tc(
             topo.expire_stale();
             Packet::Tc(topo.generate_tc_message(neighbors))
         };
+        let finish = cpu_cycles().wrapping_sub(start);
+
+        {
+            perf.lock().await.broadcast_topo_cycles = finish;
+        }
 
         let mut data = [0u8; 256];
         if let Ok(len) = postcard::to_slice(&packet, &mut data).map(|s| s.len())
@@ -201,15 +215,20 @@ async fn process_packet(
     let mut fwd_buf = [0u8; 256];
     loop {
         let rx = RX_CHANNEL.receive().await;
-        let start_cycles = cpu_cycles();
         match postcard::from_bytes::<Packet>(&rx.data[..rx.len]) {
             Ok(Packet::Hello(distances)) => {
                 let mut node_state = state.lock().await;
                 let mac = node_state.mac;
+                let start_cycles = cpu_cycles();
                 node_state.update_distance_from_self(mac, rx.src, rx.rssi);
                 node_state.update_measurements_from_neighbor(rx.src, distances);
+                let finish = cpu_cycles().wrapping_sub(start_cycles);
+                {
+                    perf.lock().await.process_packet_hello_cycles = finish;
+                }
             }
             Ok(Packet::Tc(tc)) => {
+                let start_cycles = cpu_cycles();
                 {
                     let mut node_state = state.lock().await;
                     let mac = node_state.mac;
@@ -220,6 +239,10 @@ async fn process_packet(
                     tc.neighbors.clone(),
                     tc.sequence,
                 );
+                let finish = cpu_cycles().wrapping_sub(start_cycles);
+                {
+                    perf.lock().await.process_packet_hello_cycles = finish;
+                }
 
                 if forward && let Ok(msg) = postcard::to_slice(&Packet::Tc(tc), &mut fwd_buf) {
                     let len = msg.len();
@@ -240,10 +263,6 @@ async fn process_packet(
             Err(e) => {
                 error!("Failed to parse packet: {}", defmt::Debug2Format(&e));
             }
-        }
-        let finish = cpu_cycles().wrapping_sub(start_cycles);
-        {
-            perf.lock().await.process_packet_cycles = finish;
         }
     }
 }
@@ -266,15 +285,18 @@ async fn calculate_state(
 ) {
     let mut mds = MDS::default();
     loop {
+        let start_topo = cpu_cycles();
         let estimates = {
             let topo = topology.lock().await;
             let node_state = state.lock().await;
             routing::all_estimated_distances(&topo, &node_state.neighbours)
         };
+        let finish_topo = cpu_cycles().wrapping_sub(start_topo);
         {
             state.lock().await.update_estimated_distances(estimates);
         }
 
+        let start_neigh = cpu_cycles();
         let (neighbour_dist, anchor) = {
             let node_state = state.lock().await;
             let dist = node_state.neighbour_matrix();
@@ -284,22 +306,24 @@ async fn calculate_state(
                 .position(|&mac| mac == node_state.mac);
             (dist, anchor)
         };
+        let finish_neigh = cpu_cycles().wrapping_sub(start_neigh);
         if neighbour_dist.iter().any(|row| row.contains(&I16F16::MAX)) {
             // Neighbour matrix is incomplete
             Timer::after_millis(5000).await;
             continue;
         }
 
-        // WATCH OUT mds yields, these timings not accurate
         let start_cycles = cpu_cycles();
-        let mds = mds.compute(neighbour_dist, anchor).await;
+        let mds = mds.compute(neighbour_dist, anchor, perf).await;
         let finish = cpu_cycles().wrapping_sub(start_cycles);
         {
             state.lock().await.mds = mds.clone(); // TODO the clone might be expensive
             // double clone :(
             // but publish state when available
-            let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(state.lock().await.mds.clone()));
-            perf.lock().await.calculate_state_cycles = finish;
+            let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(mds.clone()));
+            perf.lock().await.calc_state_routing_update_cycles = finish_topo;
+            perf.lock().await.calc_state_build_neighbors_cycles = finish_neigh;
+            perf.lock().await.calc_state_mds_total_cycles = finish;
         }
         Timer::after_millis(100).await;
     }
@@ -440,8 +464,8 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     // Spawn tasks
     spawner.spawn(tx_task(tx).unwrap());
-    spawner.spawn(broadcast_hello(state).unwrap());
-    spawner.spawn(broadcast_tc(state, topology).unwrap());
+    spawner.spawn(broadcast_hello(state, perf).unwrap());
+    spawner.spawn(broadcast_tc(state, topology, perf).unwrap());
     spawner.spawn(receive_packet(rx).unwrap());
     spawner.spawn(process_packet(state, perf, topology).unwrap());
     spawner.spawn(calculate_state(state, perf, topology).unwrap());

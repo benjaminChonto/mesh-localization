@@ -22,17 +22,33 @@ pub enum TelemetryMessage<'a> {
 /// [`CPU_CLOCK_HZ`] to convert to seconds.
 #[derive(Serialize, Clone, Copy, Default, Deserialize)]
 pub struct PerformanceMetrics {
-    pub broadcast_clone_dist_cycles: u32,
-    pub process_packet_cycles: u32,
-    pub calculate_state_cycles: u32,
+    pub broadcast_hello_cycles: u32,
+    pub broadcast_topo_cycles: u32,
+    pub process_packet_hello_cycles: u32,
+    pub process_packet_topo_cycles: u32,
+    pub calc_state_mds_total_cycles: u32,
+    pub calc_state_kabsch_cycles: u32,
+    pub calc_state_mds_iter_cycles: u32,
+    pub calc_state_routing_update_cycles: u32,
+    pub calc_state_build_neighbors_cycles: u32,
+    pub update_screen_mds_cycles: u32,
+    pub update_screen_table_cycles: u32,
 }
 
 impl PerformanceMetrics {
     pub fn new() -> PerformanceMetrics {
         PerformanceMetrics {
-            broadcast_clone_dist_cycles: 0,
-            process_packet_cycles: 0,
-            calculate_state_cycles: 0,
+            broadcast_hello_cycles: 0,
+            broadcast_topo_cycles: 0,
+            process_packet_hello_cycles: 0,
+            process_packet_topo_cycles: 0,
+            calc_state_mds_total_cycles: 0,
+            calc_state_kabsch_cycles: 0,
+            calc_state_mds_iter_cycles: 0,
+            calc_state_routing_update_cycles: 0,
+            calc_state_build_neighbors_cycles: 0,
+            update_screen_mds_cycles: 0,
+            update_screen_table_cycles: 0,
         }
     }
 }
