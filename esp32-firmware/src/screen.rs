@@ -108,34 +108,36 @@ fn draw_mds(
     }
 
     let current_node_index = macs.iter().position(|&mac| mac == *id).unwrap_or(0);
-    let centerpoint = if current_node_index < mds.len() {
-        &mds[current_node_index]
+
+    let (our_x, our_y): (f64, f64) = if current_node_index < mds.len() {
+        (mds[current_node_index][0].to_num(), mds[current_node_index][1].to_num())
     } else {
-        &mds[0]
+        (0.0, 0.0)
     };
 
+    // Collect non-self visible nodes using raw MDS coordinates
     let mut visible = [(0.0f64, 0.0f64); MAX_SWARM_SIZE];
     let mut visible_labels = [0usize; MAX_SWARM_SIZE];
-    let mut count = 1usize; // self is always slot 0
-    visible_labels[0] = current_node_index;
+    let mut count = 0usize;
+
+    let push_node = |visible: &mut [(f64, f64); MAX_SWARM_SIZE],
+                     visible_labels: &mut [usize; MAX_SWARM_SIZE],
+                     count: &mut usize,
+                     idx: usize| {
+        if *count < MAX_SWARM_SIZE && idx < mds.len() {
+            visible[*count] = (mds[idx][0].to_num::<f64>(), mds[idx][1].to_num::<f64>());
+            visible_labels[*count] = idx;
+            *count += 1;
+        }
+    };
 
     if let Some(path) = path {
-        // Show only nodes on the Dijkstra path to the selected target (skip self)
         for &mac in path.iter() {
-            if mac == *id || count >= MAX_SWARM_SIZE {
+            if mac == *id {
                 continue;
             }
-            if let Some(idx) = macs
-                .iter()
-                .position(|&m| m == mac)
-                .filter(|&i| i < mds.len())
-            {
-                visible[count] = (
-                    (mds[idx][0] - centerpoint[0]).to_num::<f64>(),
-                    (mds[idx][1] - centerpoint[1]).to_num::<f64>(),
-                );
-                visible_labels[count] = idx;
-                count += 1;
+            if let Some(idx) = macs.iter().position(|&m| m == mac) {
+                push_node(&mut visible, &mut visible_labels, &mut count, idx);
             }
         }
     } else {
@@ -162,42 +164,80 @@ fn draw_mds(
             }
         }
         for opt in [first, second].iter().flatten() {
-            let (idx, _) = *opt;
-            visible[count] = (
-                (mds[idx][0] - centerpoint[0]).to_num::<f64>(),
-                (mds[idx][1] - centerpoint[1]).to_num::<f64>(),
-            );
-            visible_labels[count] = idx;
-            count += 1;
+            push_node(&mut visible, &mut visible_labels, &mut count, opt.0);
         }
     }
 
-    let visible_coords = &visible[..count];
-    let visible_labels = &visible_labels[..count];
+    let other_coords = &visible[..count];
+    let other_labels = &visible_labels[..count];
 
-    let title = match path.and_then(|p| p.last()) {
-        Some(&target_mac) => match macs.iter().position(|&m| m == target_mac) {
-            Some(idx) => format!("MDS {} →{}", macs.len(), idx),
-            None => format!("MDS {}", macs.len()),
-        },
+    // Resolve target index + direct distance for labelling and bounds
+    let target_info: Option<(usize, f32)> = path
+        .and_then(|p| p.last())
+        .and_then(|&tgt_mac| {
+            let idx = macs.iter().position(|&m| m == tgt_mac)?;
+            let dist = if current_node_index < distances.len()
+                && idx < distances[current_node_index].len()
+            {
+                distances[current_node_index][idx].to_num::<f32>()
+            } else {
+                0.0
+            };
+            Some((idx, dist))
+        });
+
+    let title = match target_info {
+        Some((idx, _)) => format!("MDS {} →{}", macs.len(), idx),
         None => format!("MDS {}", macs.len()),
     };
 
-    const BOUND: f64 = 10.0;
+    // Compute bounds: when a target is selected, scale to always keep both us
+    // and the target on screen; otherwise use a fixed range
+    let (x_bounds, y_bounds) = if let Some((target_idx, _)) = target_info {
+        if target_idx < mds.len() {
+            let tx: f64 = mds[target_idx][0].to_num();
+            let ty: f64 = mds[target_idx][1].to_num();
+            let margin = 1.3;
+            let x_lo = our_x.min(tx);
+            let x_hi = our_x.max(tx);
+            let y_lo = our_y.min(ty);
+            let y_hi = our_y.max(ty);
+            let x_pad = ((x_hi - x_lo) * margin).max(2.0) / 2.0;
+            let y_pad = ((y_hi - y_lo) * margin).max(2.0) / 2.0;
+            let cx = (x_lo + x_hi) / 2.0;
+            let cy = (y_lo + y_hi) / 2.0;
+            ([cx - x_pad, cx + x_pad], [cy - y_pad, cy + y_pad])
+        } else {
+            ([-10.0, 10.0], [-10.0, 10.0])
+        }
+    } else {
+        ([-10.0f64, 10.0], [-10.0f64, 10.0])
+    };
 
     let canvas = Canvas::default()
         .block(Block::bordered().title(title.as_str()))
         .marker(Marker::Dot)
-        .x_bounds([-BOUND, BOUND])
-        .y_bounds([-BOUND, BOUND])
+        .x_bounds(x_bounds)
+        .y_bounds(y_bounds)
         .paint(|ctx| {
+            // Non-self nodes as unlabeled dots
             ctx.draw(&Points {
-                coords: visible_coords,
+                coords: other_coords,
                 color: Color::White,
             });
-            for (i, &(x, y)) in visible_coords.iter().enumerate() {
-                ctx.print(x, y, format!("{}", visible_labels[i]));
+
+            // Distance label only on the target node
+            if let Some((target_idx, dist)) = target_info {
+                for (i, &(x, y)) in other_coords.iter().enumerate() {
+                    if other_labels[i] == target_idx {
+                        ctx.print(x, y, format!("{:.1}m", dist));
+                        break;
+                    }
+                }
             }
+
+            // Self as "x" at our raw MDS position
+            ctx.print(our_x, our_y, "x");
         });
 
     frame.render_widget(canvas, frame.area());
