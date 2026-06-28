@@ -1,3 +1,5 @@
+use core::f32::consts::PI;
+
 use crate::kabsch;
 use crate::state::MAX_SWARM_SIZE;
 use esp_hal::rng::Rng;
@@ -9,7 +11,7 @@ use shared::{MdsResult, NodePosition};
 
 // TODO: find highest acceptable value
 const MDS_ITERATIONS: usize = 50;
-const SQUARED_DISTANCE_THRESHOLD: usize = 4; // 2meters
+const SQUARED_DISTANCE_THRESHOLD: usize = 0; // 2meters
 
 #[derive(Default)]
 pub struct MDS {
@@ -93,7 +95,9 @@ impl MDS {
         // await point and bloats this task's future.
         if !reinitialized && self.prev.len() == n {
             self.X = kabsch::align(&self.X, &self.prev);
-            self.X = self.orient_direction()
+            if let Some(idx) = anchor {
+                self.X = self.orient_direction(idx)
+            }
         }
 
         // Pin this device's own node at the origin, so the configuration is
@@ -114,11 +118,9 @@ impl MDS {
     }
 
 
-    fn orient_direction(&self) -> MdsResult {
-        // todo get macs and id
-        let current_idx = macs.iter().position(|&mac| mac == *id).unwrap_or(0);
-        let previous_poz: &NodePosition = self.prev.get(current_idx).expect("Current index should not be missing from previous positions");
-        let current_poz: &NodePosition = self.X.get(current_idx).expect("Current index should not be missing from previous positions");
+    fn orient_direction(&self, anchor: usize) -> MdsResult {
+        let previous_poz: &NodePosition = self.prev.get(anchor).expect("Current index should not be missing from previous positions");
+        let current_poz: &NodePosition = self.X.get(anchor).expect("Current index should not be missing from previous positions");
 
         let diff: NodePosition = current_poz.iter()
             .zip(previous_poz)
@@ -126,24 +128,25 @@ impl MDS {
                 current - previous
             }).collect();
         if diff[0] * diff[0] + diff[1] * diff[1] < SQUARED_DISTANCE_THRESHOLD {
-            return self.X
+            return self.X.clone();
         }
 
         // calculate angle
         // sin(theta) = y / (x^2 + y^2)
         // theta = arcsin( y / (x^2 + y*2))
-        let theta = atan2(diff[1], diff[0]);
+        let theta = I16F16::from_num(PI) - atan2(diff[1], diff[0]);
 
         let cos_theta = cos(theta);
         let sin_theta = sin(theta);
-        let rotation_vector = Vec::from([
-            diff[0] * cos_theta - diff[1] * sin_theta,
-            diff[0] * sin_theta + diff[1] * cos_theta
+        // clockwise rotation:
+        //   x * cos(theta) + y * sin(theta)
+        // - x * sin(theta) + y * cos(theta)
+        let rotation_vector: NodePosition = Vec::from([
+            diff[0] * cos_theta + diff[1] * sin_theta,
+            - diff[0] * sin_theta + diff[1] * cos_theta
         ]);
 
         self.X.iter().map(|poz| {
-            // return x * cos(theta) - y * sin(theta)
-            //        x * sin(theta) + y * cos(theta)
             Vec::from([
                 rotation_vector[0] * poz[0],
                 rotation_vector[1] * poz[1]

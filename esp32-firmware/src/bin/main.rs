@@ -278,8 +278,8 @@ async fn calculate_state(
         let (neighbour_dist, anchor) = {
             let node_state = state.lock().await;
             let dist = node_state.neighbour_matrix();
-            let anchor = node_state
-                .get_ordered_mac_addresses()
+            let macs = node_state.get_ordered_mac_addresses();
+            let anchor = macs
                 .iter()
                 .position(|&mac| mac == node_state.mac);
             (dist, anchor)
@@ -483,10 +483,10 @@ async fn main(spawner: embassy_executor::Spawner) {
                 led.toggle();
                 // The display is rendered by the `update_screen` task; here we just log
                 // the current state for debugging.
-                {
-                    let topo = topology.lock().await;
-                    info!("topology:\n{}", defmt::Debug2Format(topo.topology_table()));
-                }
+                // {
+                //     let topo = topology.lock().await;
+                //     info!("topology:\n{}", defmt::Debug2Format(topo.topology_table()));
+                // }
                 {
                     let node_state = state.lock().await;
                     info!(
@@ -528,10 +528,10 @@ async fn main(spawner: embassy_executor::Spawner) {
     } else {
         loop {
             led.toggle();
-            {
-                let topo = topology.lock().await;
-                info!("topology:\n{}", defmt::Debug2Format(topo.topology_table()));
-            }
+            // {
+            //     let topo = topology.lock().await;
+            //     info!("topology:\n{}", defmt::Debug2Format(topo.topology_table()));
+            // }
             {
                 let node_state = state.lock().await;
                 info!(
