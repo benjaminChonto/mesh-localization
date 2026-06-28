@@ -126,6 +126,7 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
     }
 }
 
+#[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn broadcast_tc(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
@@ -321,6 +322,7 @@ async fn calculate_state(
 
 /// Single press: cycle target node and recompute Dijkstra route.
 /// Double press (second press within 300 ms): toggle MDS ↔ Table screen.
+#[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn button_task(
     mut button: Input<'static>,
@@ -607,7 +609,7 @@ async fn main(spawner: embassy_executor::Spawner) {
                 error!("Connection failed: {}", defmt::Debug2Format(&e));
             });
 
-            loop {
+            'connected: loop {
                 // The display is rendered by the `update_screen` task; here we just log
                 // the current state for debugging.
                 {
@@ -640,7 +642,7 @@ async fn main(spawner: embassy_executor::Spawner) {
                                 "Connection failed, reconnecting ... {}",
                                 defmt::Debug2Format(&e)
                             );
-                            break;
+                            break 'connected;
                         }
                         Err(e) => {
                             error!("Payload serialization error: {}", defmt::Debug2Format(&e));

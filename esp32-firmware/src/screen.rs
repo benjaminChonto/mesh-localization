@@ -131,8 +131,8 @@ fn draw_mds(
                 .filter(|&i| i < mds.len())
             {
                 visible[count] = (
-                    mds[idx][0].to_num::<f64>() - centerpoint[0].to_num::<f64>(),
-                    mds[idx][1].to_num::<f64>() - centerpoint[1].to_num::<f64>(),
+                    (mds[idx][0] - centerpoint[0]).to_num::<f64>(),
+                    (mds[idx][1] - centerpoint[1]).to_num::<f64>(),
                 );
                 visible_labels[count] = idx;
                 count += 1;
@@ -164,8 +164,8 @@ fn draw_mds(
         for opt in [first, second].iter().flatten() {
             let (idx, _) = *opt;
             visible[count] = (
-                mds[idx][0].to_num::<f64>() - centerpoint[0].to_num::<f64>(),
-                mds[idx][1].to_num::<f64>() - centerpoint[1].to_num::<f64>(),
+                (mds[idx][0] - centerpoint[0]).to_num::<f64>(),
+                (mds[idx][1] - centerpoint[1]).to_num::<f64>(),
             );
             visible_labels[count] = idx;
             count += 1;
