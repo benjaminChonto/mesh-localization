@@ -109,13 +109,13 @@ fn draw_mds(
 
     let current_node_index = macs.iter().position(|&mac| mac == *id).unwrap_or(0);
 
-    let (our_x, our_y): (f64, f64) = if current_node_index < mds.len() {
-        (mds[current_node_index][0].to_num(), mds[current_node_index][1].to_num())
+    let centerpoint = if current_node_index < mds.len() {
+        &mds[current_node_index]
     } else {
-        (0.0, 0.0)
+        &mds[0]
     };
 
-    // Collect non-self visible nodes using raw MDS coordinates
+    // Collect non-self visible nodes, translated so we are at the canvas origin
     let mut visible = [(0.0f64, 0.0f64); MAX_SWARM_SIZE];
     let mut visible_labels = [0usize; MAX_SWARM_SIZE];
     let mut count = 0usize;
@@ -125,7 +125,10 @@ fn draw_mds(
                      count: &mut usize,
                      idx: usize| {
         if *count < MAX_SWARM_SIZE && idx < mds.len() {
-            visible[*count] = (mds[idx][0].to_num::<f64>(), mds[idx][1].to_num::<f64>());
+            visible[*count] = (
+                (mds[idx][0] - centerpoint[0]).to_num::<f64>(),
+                (mds[idx][1] - centerpoint[1]).to_num::<f64>(),
+            );
             visible_labels[*count] = idx;
             *count += 1;
         }
@@ -191,34 +194,24 @@ fn draw_mds(
         None => format!("MDS {}", macs.len()),
     };
 
-    // Compute bounds: when a target is selected, scale to always keep both us
-    // and the target on screen; otherwise use a fixed range
-    let (x_bounds, y_bounds) = if let Some((target_idx, _)) = target_info {
+    // Scale to always keep the target on screen (we are at origin after translation)
+    let bound: f64 = if let Some((target_idx, _)) = target_info {
         if target_idx < mds.len() {
-            let tx: f64 = mds[target_idx][0].to_num();
-            let ty: f64 = mds[target_idx][1].to_num();
-            let margin = 1.3;
-            let x_lo = our_x.min(tx);
-            let x_hi = our_x.max(tx);
-            let y_lo = our_y.min(ty);
-            let y_hi = our_y.max(ty);
-            let x_pad = ((x_hi - x_lo) * margin).max(2.0) / 2.0;
-            let y_pad = ((y_hi - y_lo) * margin).max(2.0) / 2.0;
-            let cx = (x_lo + x_hi) / 2.0;
-            let cy = (y_lo + y_hi) / 2.0;
-            ([cx - x_pad, cx + x_pad], [cy - y_pad, cy + y_pad])
+            let tx = (mds[target_idx][0] - centerpoint[0]).to_num::<f64>().abs();
+            let ty = (mds[target_idx][1] - centerpoint[1]).to_num::<f64>().abs();
+            (tx.max(ty) * 1.3).max(2.0)
         } else {
-            ([-10.0, 10.0], [-10.0, 10.0])
+            10.0
         }
     } else {
-        ([-10.0f64, 10.0], [-10.0f64, 10.0])
+        10.0
     };
 
     let canvas = Canvas::default()
         .block(Block::bordered().title(title.as_str()))
         .marker(Marker::Dot)
-        .x_bounds(x_bounds)
-        .y_bounds(y_bounds)
+        .x_bounds([-bound, bound])
+        .y_bounds([-bound, bound])
         .paint(|ctx| {
             // Non-self nodes as unlabeled dots
             ctx.draw(&Points {
@@ -236,8 +229,8 @@ fn draw_mds(
                 }
             }
 
-            // Self as "x" at our raw MDS position
-            ctx.print(our_x, our_y, "x");
+            // Self as "x" at canvas origin (centerpoint translation places us here)
+            ctx.print(0.0, 0.0, "x");
         });
 
     frame.render_widget(canvas, frame.area());
