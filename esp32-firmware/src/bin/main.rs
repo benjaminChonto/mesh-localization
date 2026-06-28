@@ -281,13 +281,18 @@ async fn calculate_state(
 ) {
     let mut mds = MDS::default();
     loop {
-        let estimates = {
+        let (estimates, pair_estimates) = {
             let topo = topology.lock().await;
             let node_state = state.lock().await;
-            routing::all_estimated_distances(&topo, &node_state.neighbours)
+            (
+                routing::all_estimated_distances(&topo, &node_state.neighbours),
+                routing::all_pairs_estimated_distances(&node_state.neighbours),
+            )
         };
         {
-            state.lock().await.update_estimated_distances(estimates);
+            let mut node_state = state.lock().await;
+            node_state.update_estimated_distances(estimates);
+            node_state.update_pair_distances(pair_estimates);
         }
 
         let (neighbour_dist, anchor) = {
