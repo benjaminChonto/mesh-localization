@@ -3,7 +3,7 @@ debug/
 target/
 
 # Benchmark performance logs written by mesh-ui
-logs/
+#logs/
 
 # Editor configuration
 .vscode/
