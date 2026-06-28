@@ -29,8 +29,8 @@ use esp32_firmware::screen;
 use esp32_firmware::state::{MAX_SWARM_SIZE, NodeState};
 use esp32_firmware::topology::{Packet, Topology};
 use esp32_firmware::utils::{
-    ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, NETWORK_RETRIES,
-    RX_CHANNEL_SIZE, SEND_TELEMETRY, TX_CHANNEL_SIZE, cpu_cycles,
+    ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, NETWORK_RETRIES, RX_CHANNEL_SIZE, SEND_TELEMETRY,
+    TX_CHANNEL_SIZE, cpu_cycles,
 };
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
 use heapless::Vec;
@@ -366,7 +366,11 @@ async fn button_task(
                 let topo = topology.lock().await;
                 let own = node_state.mac;
                 let mut nodes: Vec<[u8; 6], MAX_SWARM_SIZE> = Vec::new();
-                for &mac in node_state.neighbours.keys().chain(topo.topology_table().keys()) {
+                for &mac in node_state
+                    .neighbours
+                    .keys()
+                    .chain(topo.topology_table().keys())
+                {
                     if mac != own && !nodes.contains(&mac) {
                         let _ = nodes.push(mac);
                     }
@@ -518,7 +522,10 @@ async fn main(spawner: embassy_executor::Spawner) {
     let esp_now = interfaces.esp_now;
 
     let led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
-    let button = Input::new(peripherals.GPIO9, InputConfig::default().with_pull(Pull::Up));
+    let button = Input::new(
+        peripherals.GPIO9,
+        InputConfig::default().with_pull(Pull::Up),
+    );
 
     let i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
         .unwrap()
@@ -601,7 +608,6 @@ async fn main(spawner: embassy_executor::Spawner) {
             });
 
             loop {
-
                 // The display is rendered by the `update_screen` task; here we just log
                 // the current state for debugging.
                 {

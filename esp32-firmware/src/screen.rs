@@ -125,7 +125,11 @@ fn draw_mds(
             if mac == *id || count >= MAX_SWARM_SIZE {
                 continue;
             }
-            if let Some(idx) = macs.iter().position(|&m| m == mac).filter(|&i| i < mds.len()) {
+            if let Some(idx) = macs
+                .iter()
+                .position(|&m| m == mac)
+                .filter(|&i| i < mds.len())
+            {
                 visible[count] = (
                     mds[idx][0].to_num::<f64>() - centerpoint[0].to_num::<f64>(),
                     mds[idx][1].to_num::<f64>() - centerpoint[1].to_num::<f64>(),
@@ -245,7 +249,11 @@ fn draw_table(
     if let Some(tgt) = target_mac {
         if let Some(tgt_idx) = macs.iter().position(|&m| m == tgt) {
             if !shown.iter().any(|&(i, _)| i == tgt_idx) {
-                if let Some(&dist) = candidates.iter().find(|&&(i, _)| i == tgt_idx).map(|(_, d)| d) {
+                if let Some(&dist) = candidates
+                    .iter()
+                    .find(|&&(i, _)| i == tgt_idx)
+                    .map(|(_, d)| d)
+                {
                     shown.push((tgt_idx, dist));
                 }
             }
