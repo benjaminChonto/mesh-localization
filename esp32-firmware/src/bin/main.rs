@@ -122,7 +122,7 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
             warn!("Hello dropped: TX channel full");
         }
 
-        Timer::after_millis(1000).await;
+        Timer::after_millis(500).await;
     }
 }
 
@@ -301,7 +301,7 @@ async fn calculate_state(
         };
         if neighbour_dist.iter().any(|row| row.contains(&I16F16::MAX)) {
             // Neighbour matrix is incomplete
-            Timer::after_millis(5000).await;
+            Timer::after_millis(1000).await;
             continue;
         }
 
@@ -432,6 +432,7 @@ async fn update_screen(
         let mode = *screen_mode.lock().await;
 
         if let Some(ref mut terminal) = terminal {
+            info!("update screen");
             match mode {
                 screen::ScreenMode::Mds => {
                     screen::render_mds(terminal, &macs, &distances, &mds, &id, path.as_ref());
