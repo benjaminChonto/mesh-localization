@@ -6,7 +6,7 @@ use heapless::Vec;
 use shared::MdsResult;
 
 // TODO: find highest acceptable value
-const MDS_ITERATIONS: usize = 50;
+const MDS_ITERATIONS: usize = 25;
 
 #[derive(Default)]
 pub struct MDS {

@@ -76,6 +76,17 @@ pub struct State {
 
 impl State {
     #[must_use]
+    pub fn from_dist(dist: I16F16) -> State {
+        State {
+            rssi: 0,
+            ema_rssi: I16F16::ZERO,
+            window: RssiWindow::new(I16F16::ZERO),
+            dist,
+            count: 0,
+        }
+    }
+
+    #[must_use]
     pub fn new(rssi: i8) -> State {
         let f = I16F16::from_num(rssi);
         State {
@@ -183,6 +194,22 @@ impl NodeState {
 
         if !expired.is_empty() {
             self.mds.clear();
+        }
+    }
+
+    /// Stores TC-propagated distances for `origin`'s direct neighbours.
+    /// Uses `or_insert_with` so direct Hello measurements are never overwritten.
+    pub fn update_tc_neighbor_distances(
+        &mut self,
+        origin: [u8; 6],
+        neighbors: &Vec<[u8; 6], MAX_SWARM_SIZE>,
+        distances: &Vec<I16F16, MAX_SWARM_SIZE>,
+    ) {
+        let map = self.neighbours.entry(origin).or_insert_with(HashMap::new);
+        for (mac, &dist) in neighbors.iter().zip(distances.iter()) {
+            if dist < I16F16::MAX {
+                map.entry(*mac).or_insert_with(|| State::from_dist(dist));
+            }
         }
     }
 
