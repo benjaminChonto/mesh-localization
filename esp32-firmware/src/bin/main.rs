@@ -313,7 +313,7 @@ async fn calculate_state(
             state.lock().await.mds = mds.clone(); // TODO the clone might be expensive
             // double clone :(
             // but publish state when available
-            let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(state.lock().await.mds.clone()));
+            let _ = MQTT_TX_CHANNEL.try_send(TelemetryMessage::Mds(mds.clone()));
             perf.lock().await.calculate_state_cycles = finish;
         }
         Timer::after_millis(100).await;
