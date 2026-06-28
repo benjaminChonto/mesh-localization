@@ -205,8 +205,7 @@ pub fn all_pairs_estimated_distances(
                     if visited.contains(&neighbor) {
                         continue;
                     }
-                    let new_dist =
-                        dist.get(&current).copied().unwrap_or(f32::INFINITY) + d;
+                    let new_dist = dist.get(&current).copied().unwrap_or(f32::INFINITY) + d;
                     if new_dist < *dist.get(&neighbor).unwrap_or(&f32::INFINITY) {
                         dist.insert(neighbor, new_dist);
                     }
