@@ -2,6 +2,7 @@ extern crate alloc;
 
 use crate::state::{MAX_SWARM_SIZE, State};
 use embassy_time::Instant;
+use fixed::types::I16F16;
 use hashbrown::HashMap;
 use heapless::Vec;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,8 @@ pub struct TcPayload {
     pub origin_mac: [u8; 6],
     pub sequence: i32,
     pub neighbors: Vec<[u8; 6], MAX_SWARM_SIZE>,
+    /// Direct RSSI-derived distances from `origin_mac` to each entry in `neighbors` (parallel vec).
+    pub distances: Vec<I16F16, MAX_SWARM_SIZE>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -42,12 +45,17 @@ impl Topology {
         }
     }
 
-    pub fn generate_tc_message(&mut self, neighbors: Vec<[u8; 6], MAX_SWARM_SIZE>) -> TcPayload {
+    pub fn generate_tc_message(
+        &mut self,
+        neighbors: Vec<[u8; 6], MAX_SWARM_SIZE>,
+        distances: Vec<I16F16, MAX_SWARM_SIZE>,
+    ) -> TcPayload {
         self.sequence += 1;
         TcPayload {
             origin_mac: self.own_mac,
             sequence: self.sequence,
             neighbors,
+            distances,
         }
     }
 
