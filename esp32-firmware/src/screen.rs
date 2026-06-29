@@ -1,4 +1,5 @@
 use crate::state::MAX_SWARM_SIZE;
+use crate::topology::NODE_ID_LEN;
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::format;
@@ -8,6 +9,7 @@ use defmt::error;
 use display_interface::DisplayError;
 use embedded_graphics::pixelcolor::BinaryColor;
 use fixed::types::I16F16;
+use hashbrown::HashMap;
 use heapless::Vec;
 use mousefood::error::Error as RenderError;
 use mousefood::fonts::mono_4x6_atlas;
@@ -20,6 +22,8 @@ use ratatui::widgets::{Block, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
 use ssd1306::mode::BufferedGraphicsMode;
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
+
+type NodeIds = HashMap<[u8; 6], heapless::String<NODE_ID_LEN>>;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ScreenMode {
@@ -61,43 +65,52 @@ where
     Terminal::new(EmbeddedBackend::new(display, config))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_mds<'d, I>(
     terminal: &mut ScreenTerminal<'d, I>,
     macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
     distances: &Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
     mds: &Vec<Vec<I16F16, 2>, MAX_SWARM_SIZE>,
     id: &[u8; 6],
+    node_id: &str,
+    node_ids: &NodeIds,
     path: Option<&Vec<[u8; 6], MAX_SWARM_SIZE>>,
 ) where
     I: embedded_hal::i2c::I2c + 'static,
 {
-    if let Err(e) = try_render_mds(terminal, macs, distances, mds, id, path) {
+    if let Err(e) = try_render_mds(terminal, macs, distances, mds, id, node_id, node_ids, path) {
         error!("screen::render_mds: {}", defmt::Debug2Format(&e));
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_render_mds<'d, I>(
     terminal: &mut ScreenTerminal<'d, I>,
     macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
     distances: &Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
     mds: &Vec<Vec<I16F16, 2>, MAX_SWARM_SIZE>,
     id: &[u8; 6],
+    node_id: &str,
+    node_ids: &NodeIds,
     path: Option<&Vec<[u8; 6], MAX_SWARM_SIZE>>,
 ) -> Result<(), RenderError>
 where
     I: embedded_hal::i2c::I2c + 'static,
 {
     terminal.clear()?;
-    terminal.draw(|frame| draw_mds(frame, macs, distances, mds, id, path))?;
+    terminal.draw(|frame| draw_mds(frame, macs, distances, mds, id, node_id, node_ids, path))?;
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_mds(
     frame: &mut Frame,
     macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
     distances: &Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
     mds: &Vec<Vec<I16F16, 2>, MAX_SWARM_SIZE>,
     id: &[u8; 6],
+    node_id: &str,
+    node_ids: &NodeIds,
     path: Option<&Vec<[u8; 6], MAX_SWARM_SIZE>>,
 ) {
     if mds.is_empty() {
@@ -144,35 +157,14 @@ fn draw_mds(
             }
         }
     } else {
-        // Default: show the 2 closest nodes by distance
-        let mut first: Option<(usize, I16F16)> = None;
-        let mut second: Option<(usize, I16F16)> = None;
-        if current_node_index < distances.len() {
-            for (i, &dist) in distances[current_node_index].iter().enumerate() {
-                if i == current_node_index || i >= mds.len() {
-                    continue;
-                }
-                match first {
-                    None => first = Some((i, dist)),
-                    Some((_, d)) if dist < d => {
-                        second = first;
-                        first = Some((i, dist));
-                    }
-                    _ => match second {
-                        None => second = Some((i, dist)),
-                        Some((_, d)) if dist < d => second = Some((i, dist)),
-                        _ => {}
-                    },
-                }
+        // Default: show all nodes
+        for i in 0..mds.len() {
+            if i == current_node_index {
+                continue;
             }
-        }
-        for opt in [first, second].iter().flatten() {
-            push_node(&mut visible, &mut visible_labels, &mut count, opt.0);
+            push_node(&mut visible, &mut visible_labels, &mut count, i);
         }
     }
-
-    let other_coords = &visible[..count];
-    let other_labels = &visible_labels[..count];
 
     // Resolve target index + direct distance for labelling and bounds
     let target_info: Option<(usize, f32)> = path.and_then(|p| p.last()).and_then(|&tgt_mac| {
@@ -187,8 +179,15 @@ fn draw_mds(
     });
 
     let title = match target_info {
-        Some((idx, _)) => format!("MDS {} →{}", macs.len(), idx),
-        None => format!("MDS {}", macs.len()),
+        Some((idx, _)) => {
+            let tgt_label = macs
+                .get(idx)
+                .and_then(|m| node_ids.get(m))
+                .map(|s| s.as_str())
+                .unwrap_or("?");
+            format!("MDS [{}] {} →{}", node_id, macs.len(), tgt_label)
+        }
+        None => format!("MDS [{}] {}", node_id, macs.len()),
     };
 
     // Scale to always keep the target on screen (we are at origin after translation)
@@ -204,54 +203,81 @@ fn draw_mds(
         10.0
     };
 
+    // Pre-compute owned labels so the 'static paint closure doesn't borrow non-static refs.
+    let mut labels: [alloc::string::String; MAX_SWARM_SIZE] =
+        core::array::from_fn(|_| alloc::string::String::new());
+    for i in 0..count {
+        let mac = macs[visible_labels[i]];
+        labels[i] =
+            alloc::string::String::from(node_ids.get(&mac).map(|s| s.as_str()).unwrap_or("?"));
+    }
     let canvas = Canvas::default()
         .block(Block::bordered().title(title.as_str()))
         .marker(Marker::Dot)
         .x_bounds([-bound, bound])
         .y_bounds([-bound, bound])
-        .paint(|ctx| {
-            // Non-self nodes as unlabeled dots
+        .paint(move |ctx| {
+            // All non-self nodes as dots
             ctx.draw(&Points {
-                coords: other_coords,
+                coords: &visible[..count],
                 color: Color::White,
             });
 
-            // Distance label only on the target node
+            // Self as "x" at origin
+            ctx.print(0.0, 0.0, "x");
+
+            // Only label the targeted node
             if let Some((target_idx, dist)) = target_info {
-                for (i, &(x, y)) in other_coords.iter().enumerate() {
-                    if other_labels[i] == target_idx {
-                        ctx.print(x, y, format!("{:.1}m", dist));
+                for (i, &(x, y)) in visible[..count].iter().enumerate() {
+                    if visible_labels[i] == target_idx {
+                        ctx.print(x, y, format!("{} {:.1}m", labels[i], dist));
                         break;
                     }
                 }
             }
-
-            // Self as "x" at canvas origin (centerpoint translation places us here)
-            ctx.print(0.0, 0.0, "x");
         });
 
     frame.render_widget(canvas, frame.area());
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_table<'d, I>(
     terminal: &mut ScreenTerminal<'d, I>,
     macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
     distances: &Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
     id: &[u8; 6],
+    node_id: &str,
+    node_ids: &NodeIds,
+    estimated_macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
     target_mac: Option<[u8; 6]>,
 ) where
     I: embedded_hal::i2c::I2c + 'static,
 {
-    if let Err(e) = terminal.draw(|frame| draw_table(frame, macs, distances, id, target_mac)) {
+    if let Err(e) = terminal.draw(|frame| {
+        draw_table(
+            frame,
+            macs,
+            distances,
+            id,
+            node_id,
+            node_ids,
+            estimated_macs,
+            target_mac,
+        )
+    }) {
         error!("screen::render_table: {}", defmt::Debug2Format(&e));
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_table(
     frame: &mut Frame,
     macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
     distances: &Vec<Vec<I16F16, MAX_SWARM_SIZE>, MAX_SWARM_SIZE>,
     id: &[u8; 6],
+    node_id: &str,
+    node_ids: &NodeIds,
+    estimated_macs: &Vec<[u8; 6], MAX_SWARM_SIZE>,
     target_mac: Option<[u8; 6]>,
 ) {
     if macs.is_empty() {
@@ -262,48 +288,68 @@ fn draw_table(
     }
 
     let self_idx = macs.iter().position(|&m| m == *id).unwrap_or(0);
+    let target_idx = target_mac.and_then(|t| macs.iter().position(|&m| m == t));
 
-    // Collect (node_index, distance) for all non-self nodes with a known distance
-    let mut candidates: alloc::vec::Vec<(usize, I16F16)> = alloc::vec::Vec::new();
-    if self_idx < distances.len() {
-        for (i, &dist) in distances[self_idx].iter().enumerate() {
-            if i != self_idx && dist < I16F16::MAX {
-                candidates.push((i, dist));
-            }
+    // Collect all non-self nodes with their distance (None = unknown)
+    let mut candidates: alloc::vec::Vec<(usize, Option<I16F16>)> = alloc::vec::Vec::new();
+    for i in 0..macs.len() {
+        if i == self_idx {
+            continue;
         }
-    }
-    candidates.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
-
-    // Take 2 closest; append target if not already present
-    let mut shown: alloc::vec::Vec<(usize, I16F16)> = candidates.iter().take(2).copied().collect();
-    if let Some(tgt) = target_mac
-        && let Some(tgt_idx) = macs.iter().position(|&m| m == tgt)
-        && !shown.iter().any(|&(i, _)| i == tgt_idx)
-        && let Some(&dist) = candidates
-            .iter()
-            .find(|&&(i, _)| i == tgt_idx)
-            .map(|(_, d)| d)
-    {
-        shown.push((tgt_idx, dist));
+        let dist = if self_idx < distances.len() && i < distances[self_idx].len() {
+            let d = distances[self_idx][i];
+            if d < I16F16::MAX { Some(d) } else { None }
+        } else {
+            None
+        };
+        candidates.push((i, dist));
     }
 
-    let rows: alloc::vec::Vec<Row> = shown
+    // Sort: target first, then known distances ascending, then unknowns
+    candidates.sort_unstable_by(|a, b| {
+        let a_target = target_idx.is_some_and(|t| t == a.0);
+        let b_target = target_idx.is_some_and(|t| t == b.0);
+        if a_target != b_target {
+            return if a_target {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+        match (a.1, b.1) {
+            (Some(da), Some(db)) => da.partial_cmp(&db).unwrap_or(Ordering::Equal),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+    });
+
+    let rows: alloc::vec::Vec<Row> = candidates
         .iter()
         .map(|&(idx, dist)| {
-            let is_target = target_mac
-                .and_then(|t| macs.iter().position(|&m| m == t))
-                .is_some_and(|ti| ti == idx);
+            let is_target = target_idx.is_some_and(|t| t == idx);
+            let peer_label = macs
+                .get(idx)
+                .and_then(|m| node_ids.get(m))
+                .map(|s| s.as_str())
+                .unwrap_or("?");
             let id_cell = if is_target {
-                format!("{}→", idx)
+                format!(">{}", peer_label)
             } else {
-                format!("{}", idx)
+                format!(" {}", peer_label)
             };
-            let dist_cell = format!("{:.1}m", dist.to_num::<f32>());
+            let is_estimated = estimated_macs.contains(&macs[idx]);
+            let dist_cell = match dist {
+                Some(d) if is_estimated => format!("~{:.1}m", d.to_num::<f32>()),
+                Some(d) => format!(" {:.1}m", d.to_num::<f32>()),
+                None => "   ?".into(),
+            };
             Row::new(vec![id_cell, dist_cell])
         })
         .collect();
 
-    let table = Table::new(rows, [Constraint::Length(4), Constraint::Min(6)])
-        .block(Block::bordered().title("Nodes"));
+    let title = format!("Nodes [{}]", node_id);
+    let table = Table::new(rows, [Constraint::Length(6), Constraint::Min(6)])
+        .block(Block::bordered().title(title.as_str()));
     frame.render_widget(table, frame.area());
 }

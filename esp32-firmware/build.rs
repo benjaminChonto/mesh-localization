@@ -8,15 +8,36 @@ fn main() {
 
 fn generate_rssi_table() {
     use std::fmt::Write as _;
+
+    // RSSI at 1 m reference distance (dBm). Measured value for this hardware.
+    let rssi_ref: f64 = std::env::var("RSSI_REF")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-56.0);
+
+    // Path-loss exponent n (unitless). Free-space = 2.0, indoors = 3.0-4.0.
+    // Formula: dist = 10 ^ ((rssi_ref - rssi) / (10 * n))
+    let n: f64 = std::env::var("PATH_LOSS_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2.5);
+
+    println!("cargo:rerun-if-env-changed=RSSI_REF");
+    println!("cargo:rerun-if-env-changed=PATH_LOSS_N");
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:warning=RSSI model: ref={rssi_ref} dBm at 1 m, n={n}");
+
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let dest = std::path::Path::new(&out_dir).join("rssi_to_dist.rs");
 
-    // TODO env factor and RSSI at one meter should be changed here
     let mut code = String::new();
-    // 10^((-56 - rssi) / 25.0) as I16F16 bits (i32), for rssi = -128..=127
+    let _ = writeln!(
+        code,
+        "// dist = 10^((rssi_ref - rssi) / (10*n)), rssi_ref={rssi_ref}, n={n}"
+    );
     code.push_str("pub const RSSI_TO_DIST_BITS: [i32; 256] = [\n");
     for rssi in -128i32..=127 {
-        let exponent = (-56.0f64 - rssi as f64) / 25.0;
+        let exponent = (rssi_ref - rssi as f64) / (10.0 * n);
         let dist = 10.0f64.powf(exponent).clamp(0.0, 32767.0);
         let bits = (dist * 65536.0).round() as i32;
         let _ = writeln!(code, "    {bits},");
@@ -24,7 +45,6 @@ fn generate_rssi_table() {
     code.push_str("];\n");
 
     std::fs::write(dest, code).unwrap();
-    println!("cargo:rerun-if-changed=build.rs");
 }
 
 fn linker_be_nice() {

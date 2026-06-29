@@ -10,11 +10,20 @@ use serde::{Deserialize, Serialize};
 
 const NEIGHBOR_EXPIRY: u64 = 10; // seconds
 
+pub const NODE_ID_LEN: usize = 16;
+
 type TopologyEntry = (Vec<[u8; 6], MAX_SWARM_SIZE>, i32, Instant);
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HelloPayload {
+    pub node_id: heapless::String<NODE_ID_LEN>,
+    pub distances: HashMap<[u8; 6], State>,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TcPayload {
     pub origin_mac: [u8; 6],
+    pub origin_id: heapless::String<NODE_ID_LEN>,
     pub sequence: i32,
     pub neighbors: Vec<[u8; 6], MAX_SWARM_SIZE>,
     /// Direct RSSI-derived distances from `origin_mac` to each entry in `neighbors` (parallel vec).
@@ -23,12 +32,13 @@ pub struct TcPayload {
 
 #[derive(Serialize, Deserialize)]
 pub enum Packet {
-    Hello(HashMap<[u8; 6], State>),
+    Hello(HelloPayload),
     Tc(TcPayload),
 }
 
 pub struct Topology {
     own_mac: [u8; 6],
+    own_id: heapless::String<NODE_ID_LEN>,
     sequence: i32,
     // origin_mac → highest seen sequence
     seen: HashMap<[u8; 6], i32>,
@@ -37,9 +47,10 @@ pub struct Topology {
 }
 
 impl Topology {
-    pub fn new(own_mac: [u8; 6]) -> Self {
+    pub fn new(own_mac: [u8; 6], own_id: &str) -> Self {
         Topology {
             own_mac,
+            own_id: heapless::String::try_from(own_id).unwrap_or_default(),
             sequence: 0,
             seen: HashMap::new(),
             topology_table: HashMap::new(),
@@ -54,6 +65,7 @@ impl Topology {
         self.sequence += 1;
         TcPayload {
             origin_mac: self.own_mac,
+            origin_id: self.own_id.clone(),
             sequence: self.sequence,
             neighbors,
             distances,

@@ -1,10 +1,10 @@
 /**
  * Environment variables and global constants
  */
-pub const ID: &str = match option_env!("ID") {
-    Some(v) => v,
-    None => "0",
-};
+pub const ID: &str = env!(
+    "ID",
+    "NODE_ID env var must be set before flashing (e.g. ID=3 cargo build)"
+);
 pub const SEND_TELEMETRY: bool = match option_env!("SEND_TELEMETRY") {
     Some(_v) => true,
     None => false,

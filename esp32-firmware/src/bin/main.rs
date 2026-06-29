@@ -27,13 +27,13 @@ use esp32_firmware::mds::MDS;
 use esp32_firmware::routing;
 use esp32_firmware::screen;
 use esp32_firmware::state::{MAX_SWARM_SIZE, NodeState};
-use esp32_firmware::topology::{Packet, Topology};
+use esp32_firmware::topology::{HelloPayload, Packet, Topology};
 use esp32_firmware::utils::{
     ID, MDS_MAX_SIZE, MQTT_TX_CHANNEL_SIZE, NETWORK_RETRIES, RX_CHANNEL_SIZE, SEND_TELEMETRY,
     TX_CHANNEL_SIZE, cpu_cycles,
 };
 use esp32_firmware::wificonfig::{IP_ADDR, WIFI_PASS, WIFI_SSID};
-use heapless::Vec;
+use heapless::{String as HString, Vec};
 use minimq::{Buffers, ConfigBuilder, Publication, Session};
 use shared::{I16F16, PerformanceMetrics, TelemetryMessage};
 use static_cell::StaticCell;
@@ -107,7 +107,10 @@ async fn broadcast_hello(state: &'static Mutex<CriticalSectionRawMutex, NodeStat
         };
         let _finish = cpu_cycles().wrapping_sub(start_cycles);
 
-        let packet = Packet::Hello(distances.unwrap_or_default());
+        let packet = Packet::Hello(HelloPayload {
+            node_id: HString::try_from(ID).unwrap_or_default(),
+            distances: distances.unwrap_or_default(),
+        });
         let mut data = [0u8; 256];
         // Extract length first so the &mut borrow on data is dropped before we move data.
         if let Ok(len) = postcard::to_slice(&packet, &mut data).map(|s| s.len())
@@ -213,11 +216,12 @@ async fn process_packet(
         let rx = RX_CHANNEL.receive().await;
         let start_cycles = cpu_cycles();
         match postcard::from_bytes::<Packet>(&rx.data[..rx.len]) {
-            Ok(Packet::Hello(distances)) => {
+            Ok(Packet::Hello(hello)) => {
                 let mut node_state = state.lock().await;
                 let mac = node_state.mac;
                 node_state.update_distance_from_self(mac, rx.src, rx.rssi);
-                node_state.update_measurements_from_neighbor(rx.src, distances);
+                node_state.update_measurements_from_neighbor(rx.src, hello.distances);
+                node_state.register_node_id(rx.src, hello.node_id);
             }
             Ok(Packet::Tc(tc)) => {
                 {
@@ -229,6 +233,7 @@ async fn process_packet(
                         &tc.neighbors,
                         &tc.distances,
                     );
+                    node_state.register_node_id(tc.origin_mac, tc.origin_id.clone());
                 }
                 let forward = topology.lock().await.process_tc_message(
                     tc.origin_mac,
@@ -416,7 +421,6 @@ async fn button_task(
     }
 }
 
-#[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn update_screen(
     state: &'static Mutex<CriticalSectionRawMutex, NodeState>,
@@ -428,8 +432,11 @@ async fn update_screen(
         let node_state = state.lock().await;
         let mds = node_state.mds.clone();
         let macs = node_state.get_ordered_mac_addresses();
-        let distances = node_state.get_ordered_distances();
+        let distances = alloc::boxed::Box::new(node_state.get_ordered_distances());
         let id = node_state.mac;
+        let node_ids = node_state.node_ids.clone();
+        let estimated_macs: Vec<[u8; 6], MAX_SWARM_SIZE> =
+            node_state.estimated_distances.keys().copied().collect();
         drop(node_state);
 
         let path = route.lock().await;
@@ -439,10 +446,28 @@ async fn update_screen(
         if let Some(ref mut terminal) = terminal {
             match mode {
                 screen::ScreenMode::Mds => {
-                    screen::render_mds(terminal, &macs, &distances, &mds, &id, path.as_ref());
+                    screen::render_mds(
+                        terminal,
+                        &macs,
+                        &distances,
+                        &mds,
+                        &id,
+                        ID,
+                        &node_ids,
+                        path.as_ref(),
+                    );
                 }
                 screen::ScreenMode::Table => {
-                    screen::render_table(terminal, &macs, &distances, &id, target_mac);
+                    screen::render_table(
+                        terminal,
+                        &macs,
+                        &distances,
+                        &id,
+                        ID,
+                        &node_ids,
+                        &estimated_macs,
+                        target_mac,
+                    );
                 }
             }
         }
@@ -564,7 +589,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     };
 
     let topology: &'static Mutex<CriticalSectionRawMutex, Topology> =
-        TC_TOPOLOGY.init(Mutex::new(Topology::new(mac)));
+        TC_TOPOLOGY.init(Mutex::new(Topology::new(mac, ID)));
 
     let route: &'static Mutex<CriticalSectionRawMutex, Option<Vec<[u8; 6], MAX_SWARM_SIZE>>> =
         ROUTE.init(Mutex::new(None));
