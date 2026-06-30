@@ -197,6 +197,11 @@ def main(argv: list[str] | None = None) -> None:
     ]
     data = pd.concat(frames, ignore_index=True)
 
+    # Drop zero samples so they don't drag the per-metric stats down; a 0 here
+    # means the metric wasn't measured for that sample rather than a real
+    # measurement. This filters every metric column at once (the frame is long).
+    data = data[data["value"] != 0]
+
     if args.combine:
         # Pool rows by node count; the file column is no longer meaningful.
         data["file"] = data["nodes"].map(
